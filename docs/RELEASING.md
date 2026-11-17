@@ -14,12 +14,19 @@ The latest local package is `.build/release-artifacts-v8/Morph-0.1.0-macOS-unive
 
 ## Developer ID signing and notarization
 
-The current machine has no valid code-signing identity. Before public distribution:
+Current machine status (2026-11-18): Xcode 27.0 is selected and its license is accepted, but Xcode has no developer account signed in. There are zero valid code-signing identities and no `morph-notary` Keychain profile. Homebrew's audit also reports the standalone Command Line Tools package as 15.4 and requires 26.3 or newer.
 
-1. Enroll the publisher in the Apple Developer Program and create a **Developer ID Application** certificate.
-2. Install the certificate in Keychain. Do not put its private key or credentials in the repository.
-3. Store an App Store Connect API key or Apple ID credentials with `xcrun notarytool store-credentials` under a local keychain profile.
-4. Verify the identity with `security find-identity -v -p codesigning`.
+Before public distribution:
+
+1. In Xcode, open **Settings → Accounts** and add the publisher's Apple Account. The team must be enrolled in the Apple Developer Program, and the account must have permission to create Developer ID certificates (Apple requires the Account Holder role).
+2. In the account's certificate manager, create a **Developer ID Application** certificate and install it in the login Keychain. Keep the private key local; do not put it in the repository.
+3. Create a notarytool Keychain profile. For Apple Account authentication, run the command below with your account and team values; because `--password` is omitted, notarytool prompts securely for the app-specific password. Do not put that password on the command line. An App Store Connect API key is another supported option.
+
+   ```sh
+   xcrun notarytool store-credentials morph-notary --apple-id '<Apple Account>' --team-id '<Team ID>'
+   ```
+
+4. Verify the identity with `security find-identity -v -p codesigning`, and verify the profile with `xcrun notarytool history --keychain-profile morph-notary`.
 5. Build and sign by supplying the identity selector and keychain profile:
 
    ```sh
@@ -31,7 +38,7 @@ The current machine has no valid code-signing identity. Before public distributi
    ```
 
 6. Confirm notarization status, staple the ticket, verify the signature and Gatekeeper assessment, and test the archive on clean arm64 and Intel Macs.
-7. Run the Homebrew Cask audit, install, launch and uninstall checks using the final signed archive and checksum.
+7. Update the standalone Command Line Tools package to version 26.3 or newer, then run the Homebrew Cask audit, install, launch and uninstall checks using the final signed archive and checksum.
 
 With a Developer ID identity and stored notary profile, the script submits the archive using `notarytool`, staples and validates the ticket, verifies the code signature, and runs `spctl` Gatekeeper assessment before rebuilding the final archive and checksum. Without both values, it intentionally produces a local ad-hoc package and prints that the artifact is not eligible for public distribution. Do not disable Gatekeeper or advise users to bypass it.
 

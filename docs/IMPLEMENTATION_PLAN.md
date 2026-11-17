@@ -2,10 +2,9 @@
 
 ## Repository baseline
 
-- The repository is currently an Apache-2.0-licensed shell: `LICENSE` and `morph-logo.png` are the only tracked project files.
-- `main` is clean and tracks `origin/main`.
-- The development machine is an Apple Silicon Mac running macOS 26.6.2. FFmpeg, ImageMagick, libvips, Pandoc, Ghostscript, Poppler and LibreOffice executables are present. There is no Developer ID signing identity or prior Morph installation.
-- `xcodebuild` and Homebrew currently refuse to run because the installed Xcode license is not accepted. SwiftPM builds and the custom real-file check harness run with `/Library/Developer/CommandLineTools` selected through `DEVELOPER_DIR`; use that path for local validation without changing system developer settings. Homebrew-based install/update actions may still be blocked by the license check.
+- At the initial inspection, the repository contained the Apache-2.0 license and project logo. The implementation, documentation and test report now live in this repository.
+- The development machine is an Apple Silicon Mac running macOS 26.6.2. FFmpeg, ImageMagick, libvips, Pandoc, Ghostscript, Poppler and LibreOffice executables are present. Morph 0.1.0 is installed in the current user's Applications folder with its Finder Quick Action registered.
+- Xcode 27.0 is selected and its license was accepted on 2026-11-18. The separately installed Command Line Tools package reports 15.4; Homebrew's Cask audit currently requires 26.3 or newer and fails until those tools are updated. No Apple developer account is connected to Xcode, no Developer ID identity is installed, and no notarytool Keychain profile is configured.
 
 ## Product architecture
 
@@ -33,5 +32,5 @@
 - Cover mixed and batch inputs, unsupported/missing engines, failed and invalid inputs, collisions, cancellation, cleanup and large inputs where practical.
 - A universal binary is not considered validated on Intel without an Intel runtime check. Record architecture coverage honestly.
 - The Finder right-click Quick Actions submenu displays the Morph action; a selected PDF was imported and compressed end to end through the actual context menu. Finder Services and the installed Automator workflow also imported selected files; the installed app completed PNG → JPEG and PDF compression conversions. The live dependency confirmation was opened and cancelled; an install was not approved or run.
-- Homebrew Cask requires a stable upstream artifact, checksum, local audit/install/uninstall checks and Gatekeeper-compliant distribution. The current machine has no Developer ID identity, so signing/notarization and public Cask eligibility remain blocked.
+- Homebrew Cask requires a stable upstream artifact, checksum, local audit/install/uninstall checks and Gatekeeper-compliant distribution. Signing/notarization is blocked until an eligible Apple Developer Program account is added and its Developer ID certificate and notarytool Keychain profile are configured. The local audit is also blocked by the outdated standalone Command Line Tools package.
 - No engine or system dependency may be installed by the agent without a distinct explicit user approval.
