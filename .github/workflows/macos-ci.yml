@@ -39,7 +39,12 @@ jobs:
       - name: Install conversion engines used by the checks
         run: |
           brew install ffmpeg ghostscript imagemagick pandoc poppler
-          brew install --cask libreoffice
+
+      # The current LibreOffice Cask URL returns 404 for Intel; the harness
+      # skips LibreOffice-specific checks when that optional engine is absent.
+      - name: Install LibreOffice for spreadsheet checks
+        if: matrix.arch == 'arm64'
+        run: brew install --cask libreoffice
 
       - name: Build Morph
         run: swift build --product Morph
