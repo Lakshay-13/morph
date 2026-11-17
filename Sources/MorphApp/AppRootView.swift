@@ -403,6 +403,9 @@ struct ConvertView: View {
             .padding(30)
             .frame(maxWidth: 1000, alignment: .leading)
         }
+        .sheet(isPresented: $model.isShowingMetadata) {
+            MetadataInspectorSheet(reports: model.metadataReports)
+        }
     }
 
     private func icon(for url: URL) -> String {
@@ -413,6 +416,56 @@ struct ConvertView: View {
         case "zip", "7z", "gz", "xz", "bz2": "archivebox"
         default: "doc"
         }
+    }
+}
+
+private struct MetadataInspectorSheet: View {
+    let reports: [MetadataReport]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("File metadata").font(.title2.bold())
+                    Text("Read locally from the selected files. No file contents were changed.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(reports) { report in
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(report.fileName).font(.headline).textSelection(.enabled)
+                            if let error = report.error {
+                                Label(error, systemImage: "exclamationmark.triangle.fill")
+                                    .font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                            } else {
+                                ForEach(report.entries) { entry in
+                                    HStack(alignment: .firstTextBaseline, spacing: 16) {
+                                        Text(entry.label)
+                                            .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                                            .frame(width: 130, alignment: .leading)
+                                        Text(entry.value)
+                                            .font(.callout).textSelection(.enabled)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    }
+                }
+            }
+        }
+        .padding(22)
+        .frame(minWidth: 560, minHeight: 380)
     }
 }
 

@@ -5,7 +5,7 @@
 **Run date:** 2026-11-18
 
 **Command:** `Scripts/run-checks.sh` with SwiftPM using the selected Xcode 27 toolchain
-**Result:** 15 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs and one PDF compression operation were executed with real generated files.
+**Result:** 16 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs and one PDF compression operation were executed with real generated files.
 
 The harness checks that each conversion output exists and is non-empty, runs `OutputValidator`, verifies the generated content or media properties where practical, and checks SHA-256 of the original file before and after conversion. Fixtures are generated locally; no network service is used for conversion.
 
@@ -49,6 +49,7 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | PDF compression | Passed with Ghostscript 10.07.0 and the Balanced preset; PDFKit reopened the output with the same page count and source text, the input checksum stayed unchanged, and no staging file remained. |
 | LibreOffice route family constraints | Passed; DOCX, PPTX and XLSX each expose PDF export, while document ↔ spreadsheet and presentation → spreadsheet routes are not advertised. |
 | ZIP extraction | Passed; extracted file content matched, ZIP checksum unchanged. |
+| Image/PDF metadata inspection | Passed; ImageIO reported PNG dimensions and file size; PDFKit reported page count, title and author. Source checksums stayed unchanged. Invalid image metadata was rejected without modifying the file. |
 | Invalid image input | Passed; conversion failed, original remained unchanged, no partial output remained. |
 | Missing FFmpeg route | Passed; reported the missing engine before creating an output directory. |
 | Engine fallback | Passed; an injected failing ImageMagick adapter fell back to ImageIO, produced a valid JPEG and left no partial file. |
@@ -58,6 +59,7 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | Installed app and Finder integration | Passed; installed Morph 0.1.0 at `~/Applications/Morph.app` is universal (`arm64 x86_64`). Finder's right-click Quick Actions submenu displayed **Convert with Morph**; invoking it on a selected PDF imported that exact file into Morph. Finder Services and the installed Automator workflow CLI also imported selected files and consumed their temporary manifests. |
 | Installed app conversion | Passed; the installed 0.1.0 app converted the Finder fixture PNG to JPEG through its UI. `sips` identified a non-empty 1254 × 1254 JPEG; the original PNG SHA-256 remained `dec0374ba45276a3c08ac50fb11f3569ecca20198741eff419d5eaa3dd6c31a0`. |
 | Installed conversion presets | Passed live in the installed app. With a PNG selected, the Presets menu showed Images to JPEG and Images to WebP · 80%; unavailable video, audio and document presets were absent. Selecting WebP converted the sample to a valid 1254 × 1254 WebP (150,032 bytes); the input SHA-256 remained `dec0374ba45276a3c08ac50fb11f3569ecca20198741eff419d5eaa3dd6c31a0`. |
+| Installed metadata inspection | Passed live in the updated 0.1.0 app. The installed Finder workflow imported `Morph-metadata-smoke.png`; the inspector displayed its PNG format, 1.6 MB size, 1254 × 1254 dimensions and RGB color model. The source file remained unchanged. |
 | Installed PDF compression | Passed end to end from Finder's right-click Quick Actions menu: Morph imported the selected PDF, and **Compress PDF** produced a separate valid one-page PDF (276,382 bytes from a 1,452,001-byte source). `pdfinfo` validated the output; the original remained present at its original size. |
 | Sidebar and engine manager UI | Passed; all five sidebar buttons navigate, and the Engines page showed the detected engine versions and routes. |
 | Liquid Glass primary action and file picker | Passed on macOS 26.6.2; the installed universal app launched with its prominent system button style. Clicking **Choose Files** opened the native multi-file picker; Escape cancelled and returned to the overview. The macOS 14–25 bordered-button fallback compiled but was not runtime-tested on an older macOS version. Screenshot: [`morph-overview.png`](screenshots/morph-overview.png). |

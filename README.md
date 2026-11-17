@@ -14,6 +14,7 @@ Morph is a native SwiftUI macOS utility for converting and transforming files wi
 - Fallback to another registered engine when a higher-priority adapter fails and a second route exists.
 - Native image conversion and image-to-PDF, audio/video conversion, document conversion, PDF text extraction, JSON/CSV/TSV/XML conversion and ZIP/TAR.GZ repackaging.
 - Quick actions for 50% image resizing, merging selected PDFs, splitting a PDF into pages, preset-based PDF compression and extracting ZIP archives.
+- Read-only image and PDF metadata inspection, including image dimensions and available camera fields, or PDF page count and document attributes.
 - Route-aware conversion presets for Images to JPEG, Images to WebP at 80% quality, Video to MP4 with H.264, audio extraction to MP3 and Documents to PDF. Presets appear only when every selected file has the required locally available output route.
 - Output beside the source, in `~/Documents/Morph Output`, or in a chosen folder. Existing files are never replaced.
 - Local conversion history, progress, cancellation for conversions, and optional Finder reveal after completion.
@@ -39,7 +40,7 @@ Morph shows a conversion only when the detected input capability, output capabil
 | Archives | ZIP ↔ TAR.GZ repackaging and ZIP extraction. Archive paths are checked before extraction and extracted links are checked for escapes. |
 | PDF operations | Image-to-PDF, merge selected PDFs and split into pages with PDFKit; Ghostscript PDF compression with Compact, Balanced and Print quality presets. |
 
-The format registry includes other candidate types, but unsupported candidates are not shown as conversion choices. There are no active routes yet for 7z/RAR conversion, RAW processing, font conversion, YAML/TOML conversion, CAD, geospatial or scientific formats. Page-range extraction, video trimming, metadata editing and batch renaming are not implemented.
+The format registry includes other candidate types, but unsupported candidates are not shown as conversion choices. There are no active routes yet for 7z/RAR conversion, RAW processing, font conversion, YAML/TOML conversion, CAD, geospatial or scientific formats. Page-range extraction, video trimming, metadata editing and batch renaming are not implemented. Metadata inspection supports image and PDF files; it reads locally and does not write to the source.
 
 ## Engines and dependencies
 

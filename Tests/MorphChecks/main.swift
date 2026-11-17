@@ -34,6 +34,7 @@ final class MorphCheckSuite {
         test("structured data") { try checkStructuredData($0) }
         test("archive repackaging") { try checkArchives($0) }
         test("image resize, PDF pages, and ZIP extraction") { try checkFileOperations($0) }
+        test("image and PDF metadata inspection") { try checkMetadataInspection($0) }
         test("mixed batch, collisions, and source preservation") { try checkBatchAndCollisions($0) }
         test("invalid input and partial-output cleanup") { try checkInvalidInput($0) }
         test("missing engine is reported before work starts") { try checkMissingEngine($0) }
@@ -338,6 +339,46 @@ final class MorphCheckSuite {
         try expect(resultA.lastPathComponent == "same-2.jpg", "First collision was not renamed safely")
         try expect(resultB.lastPathComponent == "same-3.jpg", "Second collision was not renamed safely")
         try expect(try sha256(first) == firstHash && sha256(second) == secondHash, "Batch conversion changed an original")
+    }
+
+    private func checkMetadataInspection(_ folder: URL) throws {
+        let image = folder.appendingPathComponent("metadata-image.png")
+        try makePNG(at: image, width: 52, height: 34)
+        let imageHash = try sha256(image)
+        let imageEntries = try MorphFileOperations.inspectMetadata(image)
+        let imageFields = Dictionary(uniqueKeysWithValues: imageEntries.map { ($0.label, $0.value) })
+        try expect(imageFields["Name"] == image.lastPathComponent, "Image metadata omitted its filename")
+        try expect(imageFields["Dimensions"] == "52 × 34 pixels", "Image metadata reported incorrect dimensions")
+        try expect(imageFields["File size"] != nil, "Image metadata omitted file size")
+        try expect(try sha256(image) == imageHash, "Metadata inspection changed the image")
+
+        let pdf = folder.appendingPathComponent("metadata-document.pdf")
+        try makeTextPDF(at: pdf, text: "Metadata stays local")
+        guard let document = PDFDocument(url: pdf) else { throw CheckFailure("Could not reopen PDF fixture") }
+        document.documentAttributes = [
+            PDFDocumentAttribute.titleAttribute: "Morph metadata fixture",
+            PDFDocumentAttribute.authorAttribute: "Morph Checks",
+        ]
+        try expect(document.write(to: pdf), "Could not write PDF metadata fixture")
+        let pdfHash = try sha256(pdf)
+        let pdfEntries = try MorphFileOperations.inspectMetadata(pdf)
+        let pdfFields = Dictionary(uniqueKeysWithValues: pdfEntries.map { ($0.label, $0.value) })
+        try expect(pdfFields["Pages"] == "1", "PDF metadata reported an incorrect page count")
+        try expect(pdfFields["Title"] == "Morph metadata fixture", "PDF title metadata was not reported")
+        try expect(pdfFields["Author"] == "Morph Checks", "PDF author metadata was not reported")
+        try expect(try sha256(pdf) == pdfHash, "Metadata inspection changed the PDF")
+
+        let invalidImage = folder.appendingPathComponent("invalid.png")
+        try Data("not an image".utf8).write(to: invalidImage)
+        let invalidHash = try sha256(invalidImage)
+        do {
+            _ = try MorphFileOperations.inspectMetadata(invalidImage)
+            throw CheckFailure("Invalid image metadata was accepted")
+        } catch is CheckFailure {
+            throw CheckFailure("Invalid image metadata was accepted")
+        } catch {
+            try expect(try sha256(invalidImage) == invalidHash, "Failed inspection changed invalid input")
+        }
     }
 
     private func checkInvalidInput(_ folder: URL) throws {

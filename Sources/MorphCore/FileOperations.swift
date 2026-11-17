@@ -3,7 +3,100 @@ import ImageIO
 import PDFKit
 import UniformTypeIdentifiers
 
+public struct FileMetadataEntry: Identifiable, Hashable, Sendable {
+    public let label: String
+    public let value: String
+
+    public var id: String { label }
+
+    public init(label: String, value: String) {
+        self.label = label
+        self.value = value
+    }
+}
+
 public enum MorphFileOperations {
+    public static func inspectMetadata(_ input: URL) throws -> [FileMetadataEntry] {
+        guard FileManager.default.fileExists(atPath: input.path),
+              let attributes = try? FileManager.default.attributesOfItem(atPath: input.path) else {
+            throw MorphError.invalidInput("The selected file is no longer available.")
+        }
+
+        let fileExtension = input.pathExtension.lowercased()
+        var entries = [
+            FileMetadataEntry(label: "Name", value: input.lastPathComponent),
+            FileMetadataEntry(label: "Format", value: UTType(filenameExtension: fileExtension)?.localizedDescription ?? fileExtension.uppercased()),
+        ]
+        if let size = attributes[.size] as? NSNumber {
+            entries.append(FileMetadataEntry(label: "File size", value: ByteCountFormatter.string(fromByteCount: size.int64Value, countStyle: .file)))
+        }
+        if let modified = attributes[.modificationDate] as? Date {
+            entries.append(FileMetadataEntry(label: "Modified", value: modified.formatted(date: .abbreviated, time: .shortened)))
+        }
+
+        if fileExtension == "pdf" {
+            guard let document = PDFDocument(url: input), document.pageCount > 0 else {
+                throw MorphError.invalidInput("The selected PDF is unreadable or has no pages.")
+            }
+            entries.append(FileMetadataEntry(label: "Pages", value: String(document.pageCount)))
+            let attributes = document.documentAttributes ?? [:]
+            let fields: [(PDFDocumentAttribute, String)] = [
+                (.titleAttribute, "Title"),
+                (.authorAttribute, "Author"),
+                (.subjectAttribute, "Subject"),
+                (.keywordsAttribute, "Keywords"),
+                (.creatorAttribute, "Creator"),
+                (.producerAttribute, "Producer"),
+                (.creationDateAttribute, "Created"),
+                (.modificationDateAttribute, "Metadata modified"),
+            ]
+            for (key, label) in fields {
+                if let value = attributes[key] {
+                    entries.append(FileMetadataEntry(label: label, value: String(describing: value)))
+                }
+            }
+            return entries
+        }
+
+        guard let source = CGImageSourceCreateWithURL(input as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
+            throw MorphError.invalidInput("macOS could not read metadata for this image.")
+        }
+        if let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+           let height = properties[kCGImagePropertyPixelHeight] as? NSNumber {
+            entries.append(FileMetadataEntry(label: "Dimensions", value: "\(width) × \(height) pixels"))
+        }
+        if let colorModel = properties[kCGImagePropertyColorModel] as? String {
+            entries.append(FileMetadataEntry(label: "Color model", value: colorModel))
+        }
+        if let dpiWidth = properties[kCGImagePropertyDPIWidth] as? NSNumber,
+           let dpiHeight = properties[kCGImagePropertyDPIHeight] as? NSNumber {
+            entries.append(FileMetadataEntry(label: "Resolution", value: "\(dpiWidth) × \(dpiHeight) DPI"))
+        }
+        if let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any] {
+            append(exif[kCGImagePropertyExifDateTimeOriginal], label: "Captured", to: &entries)
+            append(exif[kCGImagePropertyExifLensModel], label: "Lens", to: &entries)
+        }
+        if let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any] {
+            append(tiff[kCGImagePropertyTIFFMake], label: "Camera make", to: &entries)
+            append(tiff[kCGImagePropertyTIFFModel], label: "Camera model", to: &entries)
+            append(tiff[kCGImagePropertyTIFFSoftware], label: "Software", to: &entries)
+        }
+        if let gps = properties[kCGImagePropertyGPSDictionary] as? [CFString: Any],
+           let latitude = gps[kCGImagePropertyGPSLatitude] as? NSNumber,
+           let longitude = gps[kCGImagePropertyGPSLongitude] as? NSNumber {
+            let latitudeRef = gps[kCGImagePropertyGPSLatitudeRef] as? String ?? "N"
+            let longitudeRef = gps[kCGImagePropertyGPSLongitudeRef] as? String ?? "E"
+            entries.append(FileMetadataEntry(label: "Location", value: "\(latitude)° \(latitudeRef), \(longitude)° \(longitudeRef)"))
+        }
+        return entries
+    }
+
+    private static func append(_ value: Any?, label: String, to entries: inout [FileMetadataEntry]) {
+        guard let value else { return }
+        entries.append(FileMetadataEntry(label: label, value: String(describing: value)))
+    }
+
     @discardableResult
     public static func resizeImage(_ input: URL, scale: Double, outputDirectory: URL? = nil, quality: Double = 0.85) throws -> URL {
         guard (0.05...1.0).contains(scale) else { throw MorphError.invalidInput("Resize scale must be between 5% and 100%.") }

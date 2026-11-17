@@ -12,6 +12,7 @@ enum OutputMode: String, CaseIterable, Identifiable, Codable {
 }
 
 enum QuickAction: String, CaseIterable, Identifiable, Hashable {
+    case inspectMetadata = "Inspect file metadata"
     case resizeImages = "Resize images to 50%"
     case mergePDFs = "Merge selected PDFs"
     case splitPDF = "Split PDF into pages"
@@ -21,6 +22,7 @@ enum QuickAction: String, CaseIterable, Identifiable, Hashable {
     var id: String { rawValue }
     var symbol: String {
         switch self {
+        case .inspectMetadata: "info.circle"
         case .resizeImages: "arrow.down.right.and.arrow.up.left"
         case .mergePDFs: "doc.on.doc"
         case .splitPDF: "square.split.2x1"
@@ -73,6 +75,13 @@ struct HistoryItem: Codable, Identifiable, Sendable {
     let date: Date
 }
 
+struct MetadataReport: Identifiable, Sendable {
+    let id = UUID()
+    let fileName: String
+    let entries: [FileMetadataEntry]
+    let error: String?
+}
+
 @MainActor
 final class MorphModel: ObservableObject {
     static let shared = MorphModel()
@@ -89,6 +98,8 @@ final class MorphModel: ObservableObject {
     @Published private(set) var conversionMessage: String?
     @Published private(set) var lastError: String?
     @Published private(set) var history: [HistoryItem] = []
+    @Published private(set) var metadataReports: [MetadataReport] = []
+    @Published var isShowingMetadata = false
     @Published private(set) var updatesAvailable: Set<EngineID> = []
     @Published private(set) var activeEngineAction: EngineID?
     @Published private(set) var isRunningUtilityCancellable = false
@@ -148,6 +159,9 @@ final class MorphModel: ObservableObject {
         var actions: [QuickAction] = []
         if extensions.allSatisfy({ ["png", "jpg", "jpeg", "heic", "heif", "tiff", "tif", "bmp", "gif", "webp"].contains($0) }) {
             actions.append(.resizeImages)
+        }
+        if extensions.allSatisfy({ ["png", "jpg", "jpeg", "heic", "heif", "tiff", "tif", "bmp", "gif", "webp", "avif", "pdf"].contains($0) }) {
+            actions.insert(.inspectMetadata, at: 0)
         }
         if extensions.count >= 2 && extensions.allSatisfy({ $0 == "pdf" }) { actions.append(.mergePDFs) }
         if extensions.count == 1, extensions[0] == "pdf" {
@@ -317,6 +331,10 @@ final class MorphModel: ObservableObject {
 
     func perform(_ action: QuickAction) {
         guard quickActions.contains(action), !isConverting, !isRunningUtility, activeEngineAction == nil else { return }
+        if action == .inspectMetadata {
+            inspectMetadata(for: selectedFiles)
+            return
+        }
         if action == .compressPDF, isDiscovering {
             conversionMessage = "Checking local conversion engines…"
             return
@@ -365,6 +383,8 @@ final class MorphModel: ObservableObject {
                     )]
                 case .extractZIP:
                     outputs = [try MorphFileOperations.extractZIP(inputs[0], outputDirectory: outputDirectories[0])]
+                case .inspectMetadata:
+                    outputs = []
                 }
                 await MainActor.run {
                     self.isRunningUtility = false
@@ -376,6 +396,7 @@ final class MorphModel: ObservableObject {
                         case .resizeImages: .nativeImage
                         case .extractZIP: .archive
                         case .compressPDF: .ghostscript
+                        case .inspectMetadata: .nativeImage
                         default: .nativePDF
                         }
                         return HistoryItem(id: UUID(), inputName: inputs[0].lastPathComponent, outputPath: $0.path, engineName: engine.displayName, date: Date())
@@ -405,6 +426,27 @@ final class MorphModel: ObservableObject {
 
     func cancelUtility() {
         utilityCancellation?.cancel()
+    }
+
+    private func inspectMetadata(for inputs: [URL]) {
+        isRunningUtility = true
+        conversionMessage = "Reading file metadata…"
+        lastError = nil
+        Task.detached(priority: .userInitiated) {
+            let reports = inputs.map { input -> MetadataReport in
+                do {
+                    return MetadataReport(fileName: input.lastPathComponent, entries: try MorphFileOperations.inspectMetadata(input), error: nil)
+                } catch {
+                    return MetadataReport(fileName: input.lastPathComponent, entries: [], error: error.localizedDescription)
+                }
+            }
+            await MainActor.run {
+                self.metadataReports = reports
+                self.isShowingMetadata = true
+                self.isRunningUtility = false
+                self.conversionMessage = "Read metadata from \(reports.count) file\(reports.count == 1 ? "" : "s"). Originals were not changed."
+            }
+        }
     }
 
     func installEngine(
