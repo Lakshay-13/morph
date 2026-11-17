@@ -14,7 +14,7 @@ The latest local package is `.build/release-artifacts-v15/Morph-0.1.0-macOS-univ
 
 ## Developer ID signing and notarization
 
-Current machine status (2026-11-18): Xcode 27.0 is selected and its license is accepted, but Xcode has no developer account signed in. There are zero valid code-signing identities and no `morph-notary` Keychain profile. Homebrew 7.0.14 reports that standalone Command Line Tools 15.4 does not support macOS 26 and requests Command Line Tools for Xcode 27.0. Software Update does not offer that package, and `xcode-select --install` says the old tools are already installed. Download the current package from [Apple Developer Downloads](https://developer.apple.com/download/all/) to unblock the audit.
+Current machine status (2026-11-18): Xcode 27.0 is selected and its license is accepted, but Xcode has no developer account signed in. There are zero valid code-signing identities and no `morph-notary` Keychain profile. Homebrew 7.0.14 reports that the SDK in `/Library/Developer/CommandLineTools` (15.4) does not support macOS 26. Homebrew prefers that SDK whenever its `clang` is present, even though Xcode 27 is selected. Software Update offers no CLT package, and `xcode-select --install` says tools are already installed. Download Command Line Tools for Xcode 27.0 from [Apple Developer Downloads](https://developer.apple.com/download/all/) to unblock the audit.
 
 Before public distribution:
 
