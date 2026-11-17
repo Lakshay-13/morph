@@ -1,0 +1,72 @@
+name: macOS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            arch: arm64
+          - runner: macos-26-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Confirm runner architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: test "$(uname -m)" = "$EXPECTED_ARCH"
+
+      - name: Install conversion engines used by the checks
+        run: |
+          brew install ffmpeg ghostscript imagemagick pandoc poppler
+          brew install --cask libreoffice
+
+      - name: Build Morph
+        run: swift build --product Morph
+
+      - name: Run real-file conversion checks
+        run: Scripts/run-checks.sh
+
+  universal-package:
+    name: Build and verify universal package
+    needs: test
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build package
+        run: MORPH_VERSION=0.1.0 MORPH_DIST_DIR="$RUNNER_TEMP/morph-dist" Scripts/package-release.sh
+
+      - name: Verify universal archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/morph-dist/Morph.app"
+          archive="$RUNNER_TEMP/morph-dist/Morph-0.1.0-macOS-universal.zip"
+          archs="$(lipo -archs "$app/Contents/MacOS/Morph")"
+          [[ "$archs" == *arm64* && "$archs" == *x86_64* ]]
+          codesign --verify --deep --strict "$app"
+          unzip -tq "$archive"
+          shasum -a 256 -c "$archive.sha256"
