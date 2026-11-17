@@ -59,6 +59,7 @@ final class MorphModel: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var history: [HistoryItem] = []
     @Published private(set) var updatesAvailable: Set<EngineID> = []
+    @Published private(set) var activeEngineAction: EngineID?
     @Published var settings: MorphSettings { didSet { saveSettings() } }
     @Published var selectedSection = AppSection.overview
 
@@ -281,25 +282,32 @@ final class MorphModel: ObservableObject {
     }
 
     func installEngine(_ id: EngineID) {
-        guard let formula = id.homebrewFormula else { return }
+        guard let formula = id.homebrewFormula, activeEngineAction == nil else { return }
+        activeEngineAction = id
         Task {
             let estimate = await Self.estimatedBottleSize(formula: formula)
             let estimateText = estimate.map { "The current \(formula) bottle is approximately \($0) to download; required dependencies are additional." }
                 ?? "A bottle size estimate is unavailable. Homebrew will resolve the formula and dependency download sizes after confirmation."
-            confirmEngineAction(id: id, action: "Install", message: "Morph will ask Homebrew to install the ‘\(formula)’ formula and any required dependencies. Homebrew verifies package checksums. \(estimateText) No engine is downloaded until you confirm here.") { [weak self] in
-                self?.runHomebrew(arguments: ["install", "--formula", formula], successMessage: "\(id.displayName) installed.")
+            confirmEngineAction(id: id, action: "Install", message: "Morph will ask Homebrew to install the ‘\(formula)’ formula and any required dependencies. Homebrew verifies package checksums. \(estimateText) No engine is downloaded until you confirm here.", cancelled: { [weak self] in
+                self?.finishEngineAction(id)
+            }) { [weak self] in
+                self?.runHomebrew(engine: id, arguments: ["install", "--formula", formula], successMessage: "\(id.displayName) installed.")
             }
         }
     }
 
     func uninstallEngine(_ id: EngineID) {
-        guard let formula = id.homebrewFormula else { return }
-        confirmEngineAction(id: id, action: "Uninstall", message: "Homebrew will remove the ‘\(formula)’ formula. Other formulas and shared dependencies are left in place.") { [weak self] in
-            self?.runHomebrew(arguments: ["uninstall", "--formula", formula], successMessage: "\(id.displayName) uninstalled.")
+        guard let formula = id.homebrewFormula, activeEngineAction == nil else { return }
+        activeEngineAction = id
+        confirmEngineAction(id: id, action: "Uninstall", message: "Homebrew will remove the ‘\(formula)’ formula. Other formulas and shared dependencies are left in place.", cancelled: { [weak self] in
+            self?.finishEngineAction(id)
+        }) { [weak self] in
+            self?.runHomebrew(engine: id, arguments: ["uninstall", "--formula", formula], successMessage: "\(id.displayName) uninstalled.")
         }
     }
 
     func checkForUpdates(_ id: EngineID) {
+        guard activeEngineAction == nil else { return }
         guard let formula = id.homebrewFormula else { return }
         guard let brew = ExecutableLocator.resolve(["brew"]) else {
             lastError = "Homebrew is not installed. Install it from https://brew.sh, then try again."
@@ -324,9 +332,12 @@ final class MorphModel: ObservableObject {
     }
 
     func updateEngine(_ id: EngineID) {
-        guard let formula = id.homebrewFormula else { return }
-        confirmEngineAction(id: id, action: "Update", message: "Homebrew will upgrade the ‘\(formula)’ formula and may download dependencies. No update starts until you confirm here.") { [weak self] in
-            self?.runHomebrew(arguments: ["upgrade", "--formula", formula], successMessage: "\(id.displayName) updated.")
+        guard let formula = id.homebrewFormula, activeEngineAction == nil else { return }
+        activeEngineAction = id
+        confirmEngineAction(id: id, action: "Update", message: "Homebrew will upgrade the ‘\(formula)’ formula and may download dependencies. No update starts until you confirm here.", cancelled: { [weak self] in
+            self?.finishEngineAction(id)
+        }) { [weak self] in
+            self?.runHomebrew(engine: id, arguments: ["upgrade", "--formula", formula], successMessage: "\(id.displayName) updated.")
         }
     }
 
@@ -347,7 +358,7 @@ final class MorphModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
-    private func confirmEngineAction(id: EngineID, action: String, message: String, confirmed: @escaping () -> Void) {
+    private func confirmEngineAction(id: EngineID, action: String, message: String, cancelled: @escaping () -> Void, confirmed: @escaping () -> Void) {
         let alert = NSAlert()
         alert.messageText = "\(action) \(id.displayName)?"
         alert.informativeText = message
@@ -355,10 +366,12 @@ final class MorphModel: ObservableObject {
         alert.addButton(withTitle: action)
         alert.addButton(withTitle: "Cancel")
         if alert.runModal() == .alertFirstButtonReturn { confirmed() }
+        else { cancelled() }
     }
 
-    private func runHomebrew(arguments: [String], successMessage: String, refreshAfter: Bool = true) {
+    private func runHomebrew(engine id: EngineID, arguments: [String], successMessage: String, refreshAfter: Bool = true) {
         guard let brew = ExecutableLocator.resolve(["brew"]) else {
+            finishEngineAction(id)
             lastError = "Homebrew is not installed. Install it from https://brew.sh, then try again."
             return
         }
@@ -370,14 +383,23 @@ final class MorphModel: ObservableObject {
                     throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Homebrew exited with status \(result.status)." : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
                 await MainActor.run {
+                    self.finishEngineAction(id)
                     self.conversionMessage = successMessage
                     if arguments.first == "install" || arguments.first == "upgrade" { self.updatesAvailable.removeAll() }
                     if refreshAfter { self.refreshEngines() }
                 }
             } catch {
-                await MainActor.run { self.lastError = error.localizedDescription; self.conversionMessage = nil }
+                await MainActor.run {
+                    self.finishEngineAction(id)
+                    self.lastError = error.localizedDescription
+                    self.conversionMessage = nil
+                }
             }
         }
+    }
+
+    private func finishEngineAction(_ id: EngineID) {
+        if activeEngineAction == id { activeEngineAction = nil }
     }
 
     private static func estimatedBottleSize(formula: String) async -> String? {

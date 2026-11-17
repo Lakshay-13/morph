@@ -44,7 +44,7 @@ Routes are deterministic: built-in adapters are preferred, followed by FFmpeg/Pa
 
 ## Dependency actions
 
-The engine screen is the only place that can request a package action. Morph checks Homebrew formula metadata for a bottle size estimate after the user selects Install, then asks for confirmation. The actual install/update/uninstall uses a fixed `brew` invocation. Homebrew checks package checksums. Morph refreshes capabilities after successful install or uninstall. Network availability and the Xcode license state can prevent Homebrew from running.
+The engine screen is the only place that can request a package action. Morph checks Homebrew formula metadata for a bottle size estimate after the user selects Install, then asks for confirmation. The actual install/update/uninstall uses a fixed `brew` invocation. A single-operation gate disables all engine controls while the estimate, confirmation or Homebrew process is active, preventing duplicate or concurrent package-manager operations. Homebrew checks package checksums. Morph refreshes capabilities after successful install or uninstall. Network availability and the Xcode license state can prevent Homebrew from running.
 
 ## Local storage
 

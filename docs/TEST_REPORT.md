@@ -60,9 +60,10 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 
 ## Limitations of this run
 
-- The harness is a self-contained SwiftPM executable rather than XCTest. SwiftPM emits a non-fatal XCTest path warning because the selected Command Line Tools SDK cannot answer `xcrun --show-sdk-platform-path`; the executable and all 12 groups still build and run.
+- The harness is a self-contained SwiftPM executable rather than XCTest. SwiftPM emits a non-fatal XCTest path warning because the selected Command Line Tools SDK cannot answer `xcrun --show-sdk-platform-path`; the executable and all 13 groups still build and run.
 - CoreGraphics emits a PDF diagnostic during fixture/PDF processing. PDFKit and Poppler checks still pass, and generated PDFs reopened with the expected page count/content.
 - Cancellation was tested at the process-runner layer and the dependency consent Cancel button was exercised live. The installed Finder context menu showed the Quick Action, but only Finder Services and Automator CLI execution were used to invoke it; the Quick Actions submenu item itself was not clicked successfully.
 - Archive traversal rejection is implemented, but this run exercised safe ZIP extraction rather than a malicious traversal ZIP fixture.
 - The app and all real conversions were executed on Apple Silicon. An Intel runtime was not available for validation.
 - The Homebrew Cask draft passes Ruby syntax validation, but Homebrew audit/install checks remain unverified because Homebrew refuses to run until the Xcode license is accepted. The local release archive is ad hoc signed, so it is not eligible for public Cask submission.
+- The dependency confirmation and Cancel action were exercised live for an uninstall request. All supported optional engines are already installed, so an install confirmation and package action could not be exercised on this Mac without first removing an engine. Homebrew actions remain gated by the unaccepted Xcode license.

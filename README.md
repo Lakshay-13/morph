@@ -39,7 +39,7 @@ The format registry includes other candidate types, but unsupported candidates a
 
 ## Engines and dependencies
 
-Apple ImageIO and PDFKit, Morph's structured-data converter and macOS archive tools do not need separate engine installs. Optional engines are not bundled. The app can ask Homebrew to install these implemented adapters: FFmpeg, ImageMagick, Pandoc, Poppler and LibreOffice. It checks for updates only when requested. No formula is installed, upgraded or removed until the user confirms in a system alert.
+Apple ImageIO and PDFKit, Morph's structured-data converter and macOS archive tools do not need separate engine installs. Optional engines are not bundled. The app can ask Homebrew to install these implemented adapters: FFmpeg, ImageMagick, Pandoc, Poppler and LibreOffice. It checks for updates only when requested. No formula is installed, upgraded or removed until the user confirms in a system alert. Morph runs one formula action at a time and disables the engine controls while checking bottle size, awaiting confirmation or running Homebrew.
 
 When the user chooses Install, Morph requests the current Homebrew formula metadata to estimate the selected formula bottle's download size where a matching bottle is available. Required dependencies add to that size; Homebrew remains responsible for resolving and verifying the actual install plan. Morph does not download conversion engines on launch.
 

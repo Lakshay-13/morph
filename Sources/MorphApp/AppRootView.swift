@@ -506,6 +506,11 @@ private struct EngineRow: View {
                 Text(capabilitySummary).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer()
+            if model.activeEngineAction == id {
+                ProgressView()
+                    .controlSize(.small)
+                    .help("Waiting for the engine action to finish")
+            }
             if status?.isInstalled == true {
                 Button("Check for updates") { model.checkForUpdates(id) }.buttonStyle(.bordered)
                 if model.updatesAvailable.contains(id) {
@@ -516,6 +521,7 @@ private struct EngineRow: View {
                 Button("Install…") { model.installEngine(id) }.buttonStyle(.borderedProminent)
             }
         }
+        .disabled(model.activeEngineAction != nil)
         .padding(15).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 
