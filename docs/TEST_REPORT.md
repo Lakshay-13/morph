@@ -72,13 +72,25 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | Universal release package | Passed; `.build/release-artifacts-v15/Morph-0.1.0-macOS-universal.zip` contains arm64 + x86_64, `unzip -t` reported no archive errors, and `shasum -a 256 -c` verified SHA-256 `25f987d6af35d4b4ccff073cf8b31f955778b2c76fd12caacf6f00c013500945`. It is ad-hoc signed, fails Gatekeeper assessment and is not eligible for public distribution. |
 | Dependency consent cancellation | Passed; the live **Uninstall FFmpeg?** confirmation was opened and cancelled. Morph continued to show FFmpeg installed, and no Homebrew install, uninstall or upgrade process ran. No package was installed or removed. |
 
+## GitHub Actions architecture coverage
+
+[macOS CI run 44175987070](https://github.com/Lakshay-13/morph/actions/runs/44175987070) on commit `c82394e` completed successfully.
+
+| Runner | Validation | Result |
+|---|---|---|
+| macOS 26, x86_64 | Confirmed the runner architecture, installed the engines available for that architecture, built Morph, and ran the real-file conversion checks. The LibreOffice Cask install is skipped on Intel because its current upstream Cask download returns 404; LibreOffice routes are capability-gated. | Passed. |
+| macOS 26, arm64 | Confirmed the runner architecture, installed conversion engines including LibreOffice, built Morph, and ran the real-file conversion checks. | Passed. |
+| macOS 26, arm64 universal-package job | Built the release ZIP and checked that the app executable contains arm64 and x86_64 slices, the app signature verifies, the ZIP passes `unzip -t`, and the SHA-256 file matches. | Passed. |
+
+The hosted Intel runner provides actual x86_64 conversion-runtime coverage. The final packaged app has not been installed and launched on a physical Intel Mac. The CI package is ad-hoc signed and is not a Gatekeeper-ready release.
+
 ## Limitations of this run
 
 - The harness is a self-contained SwiftPM executable rather than XCTest.
 - CoreGraphics emits a PDF diagnostic during fixture/PDF processing. PDFKit and Poppler checks still pass, and generated PDFs reopened with the expected page count/content.
 - Cancellation was tested at the process-runner layer and the dependency consent Cancel button was exercised live. Finder context-menu conversion was tested end to end on a generated PDF; mixed selections and other Finder application contexts were not exhaustively exercised.
 - Malicious ZIP validation covered parent traversal and one escaping symlink fixture. Decompression-bomb resource limits and a broader hostile archive corpus remain untested.
-- The app and all real conversions were executed on Apple Silicon. An Intel runtime was not available for validation.
+- This local run and the installed app smoke checks were performed on Apple Silicon. The separate GitHub Actions x86_64 runner passed its real-file conversion checks, but the packaged app has not been installed and launched on a physical Intel Mac.
 - The Homebrew Cask draft passes Ruby syntax validation. `brew audit --cask distribution/homebrew/morph.rb` fails because Homebrew prefers `/Library/Developer/CommandLineTools` (SDK 15.4) whenever that directory exists, even though Xcode 27.0 is selected; the SDK does not support macOS 26. Software Update offered no CLT package, and `xcode-select --install` reports that tools are already installed. Install Command Line Tools for Xcode 27.0 from Apple Developer Downloads before retrying the audit. Cask install/uninstall checks are unverified. The local release archive is ad-hoc signed and is not eligible for public Cask submission.
 - `brew style --cask distribution/homebrew/morph.rb` exited 1 with only Homebrew's developer-mode notice and no diagnostic, so Cask style is unverified. Homebrew developer mode was restored to disabled afterward.
 - Official Homebrew Cask submission is also premature under the current notability policy: GitHub reports that the upstream repository was created on 2026-11-17 with 0 stars. The policy normally excludes repositories under 30 days old and sets a 225-star or equivalent threshold for owner self-submissions. A project-maintained tap is the appropriate initial path once the release artifact is signed and notarized.
