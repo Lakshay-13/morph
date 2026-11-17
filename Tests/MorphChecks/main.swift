@@ -26,6 +26,7 @@ final class MorphCheckSuite {
 
     func run() {
         test("native images and PDF") { try checkImagesAndPDF($0) }
+        test("route-aware conversion presets") { _ in try checkConversionPresets() }
         test("audio and video with FFmpeg") { try checkAudioVideo($0) }
         test("documents and PDF text") { try checkDocuments($0) }
         test("LibreOffice routes stay within compatible format families") { _ in try checkLibreOfficeRoutes() }
@@ -100,6 +101,19 @@ final class MorphCheckSuite {
             try expect(leftovers.isEmpty, "ICO conversion left staging artifacts: \(leftovers)")
             print("  PASS  .png → .ico via ImageMagick")
         }
+    }
+
+    private func checkConversionPresets() throws {
+        try expect(ConversionPreset.imagesToJPEG.isAvailable(inputExtensions: ["PNG"], outputExtensions: ["jpg"]), "JPEG preset should accept a supported image and available output")
+        try expect(ConversionPreset.imagesToWebP80.isAvailable(inputExtensions: ["png"], outputExtensions: ["webp"]), "WebP preset should be available when its route exists")
+        try expect(ConversionPreset.imagesToWebP80.imageQualityOverride == 0.8, "WebP preset should use 80 percent quality")
+        try expect(!ConversionPreset.imagesToWebP80.isAvailable(inputExtensions: ["png"], outputExtensions: ["jpg"]), "WebP preset should be hidden when WebP output is unavailable")
+        try expect(!ConversionPreset.imagesToJPEG.isAvailable(inputExtensions: ["png", "docx"], outputExtensions: ["jpg"]), "Image preset should not accept a mixed non-image selection")
+        try expect(ConversionPreset.videoToMP4H264.isAvailable(inputExtensions: ["mov"], outputExtensions: ["mp4"]), "H.264 preset should accept a supported video route")
+        try expect(ConversionPreset.extractAudioToMP3.isAvailable(inputExtensions: ["mov", "wav"], outputExtensions: ["mp3"]), "Audio extraction preset should accept mixed audio and video inputs")
+        try expect(!ConversionPreset.extractAudioToMP3.isAvailable(inputExtensions: ["docx"], outputExtensions: ["mp3"]), "Audio extraction preset should reject documents")
+        try expect(!ConversionPreset.extractAudioToMP3.isAvailable(inputExtensions: ["gif"], outputExtensions: ["mp3"]), "Audio extraction preset should reject GIFs, which cannot contain audio")
+        try expect(ConversionPreset.documentsToPDF.isAvailable(inputExtensions: ["docx"], outputExtensions: ["pdf"]), "Document preset should accept an available PDF route")
     }
 
     private func checkAudioVideo(_ folder: URL) throws {

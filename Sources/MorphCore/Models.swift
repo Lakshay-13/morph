@@ -33,6 +33,67 @@ public enum PDFCompressionPreset: String, CaseIterable, Codable, Identifiable, S
     }
 }
 
+public enum ConversionPreset: String, CaseIterable, Codable, Identifiable, Sendable {
+    case imagesToJPEG
+    case imagesToWebP80
+    case videoToMP4H264
+    case extractAudioToMP3
+    case documentsToPDF
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .imagesToJPEG: "Images to JPEG"
+        case .imagesToWebP80: "Images to WebP · 80%"
+        case .videoToMP4H264: "Video to MP4 · H.264"
+        case .extractAudioToMP3: "Extract audio to MP3"
+        case .documentsToPDF: "Documents to PDF"
+        }
+    }
+
+    public var symbol: String {
+        switch self {
+        case .imagesToJPEG, .imagesToWebP80: "photo"
+        case .videoToMP4H264: "film"
+        case .extractAudioToMP3: "waveform"
+        case .documentsToPDF: "doc.text"
+        }
+    }
+
+    public var outputExtension: String {
+        switch self {
+        case .imagesToJPEG: "jpg"
+        case .imagesToWebP80: "webp"
+        case .videoToMP4H264: "mp4"
+        case .extractAudioToMP3: "mp3"
+        case .documentsToPDF: "pdf"
+        }
+    }
+
+    public var imageQualityOverride: Double? {
+        self == .imagesToWebP80 ? 0.8 : nil
+    }
+
+    public func isAvailable(inputExtensions: Set<String>, outputExtensions: Set<String>) -> Bool {
+        guard !inputExtensions.isEmpty, outputExtensions.contains(outputExtension) else { return false }
+        return inputExtensions.allSatisfy { self.inputExtensions.contains($0.lowercased()) }
+    }
+
+    private var inputExtensions: Set<String> {
+        switch self {
+        case .imagesToJPEG, .imagesToWebP80:
+            ["png", "jpg", "jpeg", "webp", "heic", "heif", "tif", "tiff", "bmp", "gif", "svg", "ico", "avif"]
+        case .videoToMP4H264:
+            ["mp4", "m4v", "mov", "mkv", "avi", "webm", "gif", "mpeg", "mpg", "wmv", "flv", "3gp", "3g2"]
+        case .extractAudioToMP3:
+            ["mp4", "m4v", "mov", "mkv", "avi", "webm", "mpeg", "mpg", "wmv", "flv", "3gp", "3g2", "mp3", "wav", "flac", "aac", "m4a", "ogg", "opus", "aiff", "aif", "wma"]
+        case .documentsToPDF:
+            ["doc", "docx", "odt", "rtf", "txt", "html", "htm", "md", "markdown", "epub", "ppt", "pptx", "odp", "xls", "xlsx", "ods", "csv"]
+        }
+    }
+}
+
 public struct MorphFormat: Hashable, Identifiable, Codable, Sendable {
     public let fileExtension: String
     public let displayName: String

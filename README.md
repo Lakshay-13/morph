@@ -14,6 +14,7 @@ Morph is a native SwiftUI macOS utility for converting and transforming files wi
 - Fallback to another registered engine when a higher-priority adapter fails and a second route exists.
 - Native image conversion and image-to-PDF, audio/video conversion, document conversion, PDF text extraction, JSON/CSV/TSV/XML conversion and ZIP/TAR.GZ repackaging.
 - Quick actions for 50% image resizing, merging selected PDFs, splitting a PDF into pages, preset-based PDF compression and extracting ZIP archives.
+- Route-aware conversion presets for Images to JPEG, Images to WebP at 80% quality, Video to MP4 with H.264, audio extraction to MP3 and Documents to PDF. Presets appear only when every selected file has the required locally available output route.
 - Output beside the source, in `~/Documents/Morph Output`, or in a chosen folder. Existing files are never replaced.
 - Local conversion history, progress, cancellation for conversions, and optional Finder reveal after completion.
 - An engine manager that requires an explicit confirmation before installing, updating or uninstalling Homebrew formulas.
@@ -84,7 +85,7 @@ The development build is ad-hoc signed and is not the signed/notarized public re
 3. Choose the output location in Settings. The default is beside each original.
 4. Start the conversion. Morph writes to a temporary file, validates it, then saves with a unique name. Originals remain unchanged.
 
-The image quality setting applies to lossy image outputs. Resize quick actions scale images to 50% of their current longest edge and save JPEG copies. Choose the PDF compression preset in Settings; compression writes a new PDF and may alter metadata or interactive PDF features. A compressed copy cannot retain the original digital signature.
+The image quality setting applies to lossy image outputs; the Images to WebP at 80% preset overrides it for that conversion. Resize quick actions scale images to 50% of their current longest edge and save JPEG copies. Choose the PDF compression preset in Settings; compression writes a new PDF and may alter metadata or interactive PDF features. A compressed copy cannot retain the original digital signature.
 
 ## Development
 

@@ -322,7 +322,24 @@ struct ConvertView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Convert to").font(.headline)
+                        HStack {
+                            Text("Convert to").font(.headline)
+                            Spacer()
+                            if !model.availableConversionPresets.isEmpty {
+                                Menu {
+                                    ForEach(model.availableConversionPresets) { preset in
+                                        Button {
+                                            model.apply(preset)
+                                        } label: {
+                                            Label(preset.displayName, systemImage: preset.symbol)
+                                        }
+                                    }
+                                } label: {
+                                    Label("Presets", systemImage: "slider.horizontal.3")
+                                }
+                                .accessibilityIdentifier("convert.presets")
+                            }
+                        }
                         if model.isDiscovering {
                             ProgressView("Checking local conversion engines…")
                         } else if model.outputFormats.isEmpty {
@@ -337,7 +354,7 @@ struct ConvertView: View {
                                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 135), spacing: 10)], spacing: 10) {
                                             ForEach(formats) { format in
                                                 FormatButton(format: format, selected: model.selectedOutputExtension == format.fileExtension) {
-                                                    model.selectedOutputExtension = format.fileExtension
+                                                    model.selectOutputFormat(format)
                                                 }
                                             }
                                         }
@@ -372,7 +389,9 @@ struct ConvertView: View {
                         Label("Originals are preserved", systemImage: "lock.shield").font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button {
-                            if let format = model.outputFormats.first(where: { $0.fileExtension == model.selectedOutputExtension }) { model.startConversion(to: format) }
+                            if let format = model.outputFormats.first(where: { $0.fileExtension == model.selectedOutputExtension }) {
+                                model.startConversion(to: format, preset: model.selectedConversionPreset)
+                            }
                         } label: {
                             Label("Convert \(model.selectedFiles.count) file\(model.selectedFiles.count == 1 ? "" : "s")", systemImage: "arrow.right.circle.fill")
                         }

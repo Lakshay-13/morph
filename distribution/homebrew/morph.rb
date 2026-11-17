@@ -1,9 +1,9 @@
-# Draft only. The hash below is for a local ad-hoc archive, not a public release.
+# Draft only. This is the local ad-hoc v0.1.0 archive hash, not a public release.
 # Do not submit until the URL exists and the signed, notarized release passes
 # Gatekeeper, Homebrew audit, install and uninstall checks.
 cask "morph" do
   version "0.1.0"
-  sha256 "dd3049a2c65329a0d9c816cfabe335f99f3d9c42cbb6cb8d0d44fd714d6d9e96"
+  sha256 "ad86ae0abb71e2b5c25a5ca4a9179ec7daf066fb730fac69ebf070e16826cc33"
 
   url "https://github.com/Lakshay-13/morph/releases/download/v#{version}/Morph-#{version}-macOS-universal.zip"
   name "Morph"

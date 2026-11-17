@@ -81,6 +81,7 @@ final class MorphModel: ObservableObject {
     @Published private(set) var isDiscovering = true
     @Published var selectedFiles: [URL] = []
     @Published var selectedOutputExtension: String?
+    @Published var selectedConversionPreset: ConversionPreset?
     @Published private(set) var isConverting = false
     @Published private(set) var isRunningUtility = false
     @Published private(set) var progress: Double = 0
@@ -126,6 +127,14 @@ final class MorphModel: ObservableObject {
         }
     }
 
+    var availableConversionPresets: [ConversionPreset] {
+        let inputExtensions = Set(selectedFiles.map { $0.pathExtension.lowercased() })
+        let outputExtensions = Set(outputFormats.map(\.fileExtension))
+        return ConversionPreset.allCases.filter {
+            $0.isAvailable(inputExtensions: inputExtensions, outputExtensions: outputExtensions)
+        }
+    }
+
     var availableRouteCount: Int { registry?.routes.count ?? 0 }
     var activeEngineCount: Int {
         var routeEngines = Set(registry?.routes.map(\.engine) ?? [])
@@ -152,6 +161,7 @@ final class MorphModel: ObservableObject {
     func importFiles(_ urls: [URL]) {
         selectedFiles = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
         selectedOutputExtension = nil
+        selectedConversionPreset = nil
         selectedSection = .convert
         lastError = nil
     }
@@ -181,13 +191,36 @@ final class MorphModel: ObservableObject {
 
     func removeFile(_ url: URL) {
         selectedFiles.removeAll { $0 == url }
-        if selectedFiles.isEmpty { selectedOutputExtension = nil }
+        if selectedFiles.isEmpty {
+            selectedOutputExtension = nil
+            selectedConversionPreset = nil
+        } else {
+            if let selectedConversionPreset, !availableConversionPresets.contains(selectedConversionPreset) {
+                self.selectedConversionPreset = nil
+                selectedOutputExtension = nil
+            } else if let selectedOutputExtension, !outputFormats.contains(where: { $0.fileExtension == selectedOutputExtension }) {
+                self.selectedOutputExtension = nil
+                selectedConversionPreset = nil
+            }
+        }
     }
 
     func clearSelection() {
         selectedFiles = []
         selectedOutputExtension = nil
+        selectedConversionPreset = nil
         selectedSection = .overview
+    }
+
+    func apply(_ preset: ConversionPreset) {
+        guard availableConversionPresets.contains(preset) else { return }
+        selectedConversionPreset = preset
+        selectedOutputExtension = preset.outputExtension
+    }
+
+    func selectOutputFormat(_ format: MorphFormat) {
+        selectedOutputExtension = format.fileExtension
+        selectedConversionPreset = nil
     }
 
     func refreshEngines() {
@@ -206,11 +239,16 @@ final class MorphModel: ObservableObject {
         }
     }
 
-    func startConversion(to format: MorphFormat) {
+    func startConversion(to format: MorphFormat, preset: ConversionPreset? = nil) {
         guard let registry, !isConverting else { return }
         let inputs = selectedFiles
         guard !inputs.isEmpty else { return }
+        if let preset,
+           (!availableConversionPresets.contains(preset) || preset.outputExtension != format.fileExtension) {
+            return
+        }
         selectedOutputExtension = format.fileExtension
+        selectedConversionPreset = preset
         isConverting = true
         progress = 0
         currentFileName = nil
@@ -235,7 +273,8 @@ final class MorphModel: ObservableObject {
                 }
                 do {
                     let selectedFormat = registry.availableOutputs(for: input).first(where: { $0.output.fileExtension == format.fileExtension })?.output ?? format
-                    let request = ConversionRequest(inputURL: input, outputFormat: selectedFormat, outputDirectory: job.1, imageQuality: currentSettings.imageQuality)
+                    let imageQuality = preset?.imageQualityOverride ?? currentSettings.imageQuality
+                    let request = ConversionRequest(inputURL: input, outputFormat: selectedFormat, outputDirectory: job.1, imageQuality: imageQuality)
                     results.append(try service.convert(request, cancellation: token))
                 } catch {
                     if !token.isCancelled {
