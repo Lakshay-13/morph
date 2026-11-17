@@ -2,6 +2,8 @@
 
 **Run on:** macOS 26.6.2, Apple M3 Max (arm64)
 
+**Run date:** 2026-11-17
+
 **Command:** `Scripts/run-checks.sh` with SwiftPM using the installed Command Line Tools
 **Result:** 12 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs were executed with real generated files.
 
@@ -50,13 +52,16 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | Cancellation | Passed; cancelled child process stopped within the 3-second test limit. |
 | Large image | Passed; converted a locally generated 2048 × 2048 noisy PNG larger than 12 MB and kept the source unchanged. |
 | Conversion staging cleanup | Passed; no `.morph-*.staging` directory or `.partial` file remained after PNG → ICO or after failed/fallback engine attempts. |
-| Installed Finder handoff and app UI | Passed; macOS `automator -v -i <fixture> <installed-workflow>` executed the installed Quick Action, Morph imported the PNG and consumed the temporary manifest, and the UI completed PNG → ICO. ImageMagick validated the output and the source SHA-256 remained unchanged. The context-menu listing was previously observed; a direct click from Finder after the final handoff update was not re-run. |
-| Dependency consent alert | Not verified in the live UI; no package action was confirmed or run during this test. |
+| Installed app and Finder integration | Passed; installed Morph 0.1.0 at `~/Applications/Morph.app` is universal (`arm64 x86_64`). Finder's right-click Quick Actions submenu displayed **Convert with Morph**. The Finder Services menu also listed the enabled action; invoking it imported a selected PNG into Morph. The installed Automator workflow CLI independently imported the same fixture and consumed its temporary manifest. A direct click on the Quick Actions submenu item was not confirmed. |
+| Installed app conversion | Passed; the installed 0.1.0 app converted the Finder fixture PNG to JPEG through its UI. `sips` identified a non-empty 1254 × 1254 JPEG; the original PNG SHA-256 remained `dec0374ba45276a3c08ac50fb11f3569ecca20198741eff419d5eaa3dd6c31a0`. |
+| Sidebar and engine manager UI | Passed; all five sidebar buttons navigate, and the Engines page showed the detected engine versions and routes. |
+| Dependency consent cancellation | Passed; the live **Uninstall FFmpeg?** confirmation was opened and cancelled. Morph continued to show FFmpeg installed, and no Homebrew install, uninstall or upgrade process ran. No package was installed or removed. |
 
 ## Limitations of this run
 
 - The harness is a self-contained SwiftPM executable rather than XCTest. SwiftPM emits a non-fatal XCTest path warning because the selected Command Line Tools SDK cannot answer `xcrun --show-sdk-platform-path`; the executable and all 12 groups still build and run.
 - CoreGraphics emits a PDF diagnostic during fixture/PDF processing. PDFKit and Poppler checks still pass, and generated PDFs reopened with the expected page count/content.
-- Cancellation was tested at the process-runner layer. The installed workflow script, app file intake and conversion UI were exercised separately; a post-update click through Finder's context menu and the live dependency consent alert remain unverified.
+- Cancellation was tested at the process-runner layer and the dependency consent Cancel button was exercised live. The installed Finder context menu showed the Quick Action, but only Finder Services and Automator CLI execution were used to invoke it; the Quick Actions submenu item itself was not clicked successfully.
 - Archive traversal rejection is implemented, but this run exercised safe ZIP extraction rather than a malicious traversal ZIP fixture.
 - The app and all real conversions were executed on Apple Silicon. An Intel runtime was not available for validation.
+- The Homebrew Cask draft passes Ruby syntax validation, but Homebrew audit/install checks remain unverified because Homebrew refuses to run until the Xcode license is accepted. The local release archive is ad hoc signed, so it is not eligible for public Cask submission.

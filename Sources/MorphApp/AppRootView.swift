@@ -25,13 +25,30 @@ struct AppRootView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, 14)
 
-                List(selection: Binding<AppSection?>(get: { model.selectedSection }, set: { if let value = $0 { model.selectedSection = value } })) {
-                    ForEach(AppSection.allCases) { section in
-                        Label(section.rawValue, systemImage: section.symbol)
-                            .tag(section as AppSection?)
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(AppSection.allCases) { section in
+                            Button {
+                                model.selectedSection = section
+                            } label: {
+                                Label(section.rawValue, systemImage: section.symbol)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        model.selectedSection == section ? Color.accentColor.opacity(0.13) : .clear,
+                                        in: RoundedRectangle(cornerRadius: 8)
+                                    )
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("sidebar.\(section.rawValue.lowercased())")
+                            .accessibilityValue(model.selectedSection == section ? "Selected" : "")
+                        }
                     }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                 }
-                .listStyle(.sidebar)
 
                 VStack(alignment: .leading, spacing: 5) {
                     Label(model.isDiscovering ? "Checking engines…" : "Local processing", systemImage: "lock.shield")
