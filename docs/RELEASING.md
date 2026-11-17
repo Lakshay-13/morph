@@ -33,7 +33,7 @@ The current machine has no valid code-signing identity. Before public distributi
 6. Confirm notarization status, staple the ticket, verify the signature and Gatekeeper assessment, and test the archive on clean arm64 and Intel Macs.
 7. Run the Homebrew Cask audit, install, launch and uninstall checks using the final signed archive and checksum.
 
-The script uses `notarytool submit --wait` and staples the application when a Developer ID identity and stored notary profile are provided. Without them, it intentionally produces a local ad-hoc package and prints that the artifact is not eligible for public distribution. Do not disable Gatekeeper or advise users to bypass it.
+With a Developer ID identity and stored notary profile, the script submits the archive using `notarytool`, staples and validates the ticket, verifies the code signature, and runs `spctl` Gatekeeper assessment before rebuilding the final archive and checksum. Without both values, it intentionally produces a local ad-hoc package and prints that the artifact is not eligible for public distribution. Do not disable Gatekeeper or advise users to bypass it.
 
 ## Homebrew path
 

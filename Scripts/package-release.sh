@@ -31,6 +31,9 @@ ditto -c -k --keepParent "$STAGE" "$ARCHIVE"
 if [[ -n "${MORPH_CODESIGN_IDENTITY:-}" && -n "${MORPH_NOTARY_PROFILE:-}" ]]; then
   xcrun notarytool submit "$ARCHIVE" --keychain-profile "$MORPH_NOTARY_PROFILE" --wait
   xcrun stapler staple "$STAGE/Morph.app"
+  xcrun stapler validate "$STAGE/Morph.app"
+  codesign --verify --deep --strict --verbose=2 "$STAGE/Morph.app"
+  spctl --assess --type execute --verbose=2 "$STAGE/Morph.app"
   rm "$ARCHIVE"
   ditto -c -k --keepParent "$STAGE" "$ARCHIVE"
 elif [[ -z "${MORPH_CODESIGN_IDENTITY:-}" ]]; then
