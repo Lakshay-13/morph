@@ -64,12 +64,22 @@ jobs:
       - name: Audit the Homebrew Cask draft
         run: |
           tap="codex/morph-cask-validation"
+          export XDG_CONFIG_HOME="$RUNNER_TEMP/homebrew-validation-config"
+          mkdir -p "$XDG_CONFIG_HOME"
           brew tap-new --no-git "$tap"
           tap_dir="$(brew --repository "$tap")"
           mkdir -p "$tap_dir/Casks"
           cp distribution/homebrew/morph.rb "$tap_dir/Casks/morph.rb"
+          brew trust --cask "$tap/morph"
+          set +e
           brew audit --cask "$tap/morph"
+          audit_status=$?
           brew style --cask "$tap/morph"
+          style_status=$?
+          set -e
+          if [[ "$audit_status" -ne 0 || "$style_status" -ne 0 ]]; then
+            exit 1
+          fi
 
       - name: Build package
         run: MORPH_VERSION=0.1.0 MORPH_DIST_DIR="$RUNNER_TEMP/morph-dist" Scripts/package-release.sh

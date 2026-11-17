@@ -10,6 +10,11 @@ cask "morph" do
   desc "Native file conversion and transformation utility"
   homepage "https://github.com/Lakshay-13/morph"
 
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
   depends_on macos: :sonoma
 
   # Install the Finder Quick Action alongside the application.
