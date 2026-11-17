@@ -15,6 +15,7 @@ enum QuickAction: String, CaseIterable, Identifiable, Hashable {
     case inspectMetadata = "Inspect file metadata"
     case resizeImages = "Resize images to 50%"
     case mergePDFs = "Merge selected PDFs"
+    case extractPDFPages = "Extract PDF pages…"
     case splitPDF = "Split PDF into pages"
     case compressPDF = "Compress PDF"
     case extractZIP = "Extract ZIP archive"
@@ -25,6 +26,7 @@ enum QuickAction: String, CaseIterable, Identifiable, Hashable {
         case .inspectMetadata: "info.circle"
         case .resizeImages: "arrow.down.right.and.arrow.up.left"
         case .mergePDFs: "doc.on.doc"
+        case .extractPDFPages: "doc.text.magnifyingglass"
         case .splitPDF: "square.split.2x1"
         case .compressPDF: "arrow.down.doc"
         case .extractZIP: "archivebox"
@@ -165,6 +167,7 @@ final class MorphModel: ObservableObject {
         }
         if extensions.count >= 2 && extensions.allSatisfy({ $0 == "pdf" }) { actions.append(.mergePDFs) }
         if extensions.count == 1, extensions[0] == "pdf" {
+            actions.append(.extractPDFPages)
             actions.append(.splitPDF)
             actions.append(.compressPDF)
         }
@@ -335,6 +338,10 @@ final class MorphModel: ObservableObject {
             inspectMetadata(for: selectedFiles)
             return
         }
+        if action == .extractPDFPages {
+            requestPDFPageRange()
+            return
+        }
         if action == .compressPDF, isDiscovering {
             conversionMessage = "Checking local conversion engines…"
             return
@@ -385,6 +392,8 @@ final class MorphModel: ObservableObject {
                     outputs = [try MorphFileOperations.extractZIP(inputs[0], outputDirectory: outputDirectories[0])]
                 case .inspectMetadata:
                     outputs = []
+                case .extractPDFPages:
+                    outputs = []
                 }
                 await MainActor.run {
                     self.isRunningUtility = false
@@ -397,6 +406,7 @@ final class MorphModel: ObservableObject {
                         case .extractZIP: .archive
                         case .compressPDF: .ghostscript
                         case .inspectMetadata: .nativeImage
+                        case .extractPDFPages: .nativePDF
                         default: .nativePDF
                         }
                         return HistoryItem(id: UUID(), inputName: inputs[0].lastPathComponent, outputPath: $0.path, engineName: engine.displayName, date: Date())
@@ -449,6 +459,60 @@ final class MorphModel: ObservableObject {
         }
     }
 
+    private func requestPDFPageRange() {
+        guard selectedFiles.count == 1, let input = selectedFiles.first else { return }
+        let alert = NSAlert()
+        alert.messageText = "Extract PDF pages"
+        alert.informativeText = "Enter page numbers or ascending ranges, for example 1-3, 5. The extracted pages will be saved as a new PDF."
+        alert.alertStyle = .informational
+        let field = NSTextField(string: "")
+        field.placeholderString = "1-3, 5"
+        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Extract")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        extractPDFPages(pageRange: field.stringValue, input: input)
+    }
+
+    private func extractPDFPages(pageRange: String, input: URL) {
+        guard !isConverting, !isRunningUtility, activeEngineAction == nil else { return }
+        let outputDirectory = Self.outputDirectory(for: input, settings: settings)
+        let currentSettings = settings
+        isRunningUtility = true
+        isRunningUtilityCancellable = false
+        conversionMessage = "Extracting PDF pages…"
+        lastError = nil
+
+        Task.detached(priority: .userInitiated) {
+            do {
+                let output = try MorphFileOperations.extractPDFPages(input, pageRange: pageRange, outputDirectory: outputDirectory)
+                await MainActor.run {
+                    self.isRunningUtility = false
+                    self.conversionMessage = "Extracted selected PDF pages."
+                    self.history.insert(HistoryItem(
+                        id: UUID(),
+                        inputName: input.lastPathComponent,
+                        outputPath: output.path,
+                        engineName: EngineID.nativePDF.displayName,
+                        date: Date()
+                    ), at: 0)
+                    self.history = Array(self.history.prefix(200))
+                    self.saveHistory()
+                    if currentSettings.revealOutputAfterConversion {
+                        NSWorkspace.shared.activateFileViewerSelecting([output])
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.isRunningUtility = false
+                    self.lastError = error.localizedDescription
+                    self.conversionMessage = "PDF page extraction could not be completed."
+                }
+            }
+        }
+    }
+
     func installEngine(
         _ id: EngineID,
         reason: String? = nil,
@@ -458,17 +522,18 @@ final class MorphModel: ObservableObject {
         guard let formula = id.homebrewFormula, activeEngineAction == nil, !isConverting, !isRunningUtility else { return }
         activeEngineAction = id
         conversionMessage = "Checking \(id.displayName) download size…"
-        Task {
+        Task { [weak self] in
             let estimate = await Self.estimatedBottleSize(formula: formula)
+            guard let self else { return }
             let estimateText = estimate.map { "The current \(formula) bottle is approximately \($0) to download; required dependencies are additional." }
                 ?? "A bottle size estimate is unavailable. Homebrew will resolve the formula and dependency download sizes after confirmation."
             let reasonText = reason.map { "\($0)\n\n" } ?? ""
-            confirmEngineAction(id: id, action: "Install", message: "\(reasonText)Morph will ask Homebrew to install the ‘\(formula)’ formula and any required dependencies. Homebrew verifies package checksums. \(estimateText) No engine is downloaded until you confirm here.", cancelled: { [weak self] in
-                self?.finishEngineAction(id)
-                self?.conversionMessage = "Install cancelled. No output was created."
+            confirmEngineAction(id: id, action: "Install", message: "\(reasonText)Morph will ask Homebrew to install the ‘\(formula)’ formula and any required dependencies. Homebrew verifies package checksums. \(estimateText) No engine is downloaded until you confirm here.", cancelled: {
+                self.finishEngineAction(id)
+                self.conversionMessage = "Install cancelled. No output was created."
                 onCancel?()
-            }) { [weak self] in
-                self?.runHomebrew(engine: id, arguments: ["install", "--formula", formula], successMessage: "\(id.displayName) installed.", onSuccess: onSuccess)
+            }) {
+                self.runHomebrew(engine: id, arguments: ["install", "--formula", formula], successMessage: "\(id.displayName) installed.", onSuccess: onSuccess)
             }
         }
     }

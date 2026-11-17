@@ -5,7 +5,7 @@
 **Run date:** 2026-11-18
 
 **Command:** `Scripts/run-checks.sh` with SwiftPM using the selected Xcode 27 toolchain
-**Result:** 16 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs and one PDF compression operation were executed with real generated files.
+**Result:** 17 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs, one PDF page-range extraction and one PDF compression operation were executed with real generated files.
 
 The harness checks that each conversion output exists and is non-empty, runs `OutputValidator`, verifies the generated content or media properties where practical, and checks SHA-256 of the original file before and after conversion. Fixtures are generated locally; no network service is used for conversion.
 
@@ -46,6 +46,7 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | Route-aware conversion presets | Passed; tested output-route filtering, mixed input rejection, supported video/audio/document selections, case-insensitive extensions and the WebP 80% quality override. |
 | Image resize to 50% | Passed; a 160 × 80 PNG produced an 80 × 40 JPEG, source checksum unchanged. |
 | PDF merge and split | Passed; two one-page PDFs merged to two pages and split back into two one-page PDFs. Input checksums unchanged. |
+| PDF page-range extraction | Passed; selecting pages `2, 1` preserved requested order; invalid, duplicate and out-of-bounds selections were rejected; a repeated extraction used a collision-safe filename. Source checksum unchanged. |
 | PDF compression | Passed with Ghostscript 10.07.0 and the Balanced preset; PDFKit reopened the output with the same page count and source text, the input checksum stayed unchanged, and no staging file remained. |
 | LibreOffice route family constraints | Passed; DOCX, PPTX and XLSX each expose PDF export, while document ↔ spreadsheet and presentation → spreadsheet routes are not advertised. |
 | ZIP extraction | Passed; extracted file content matched, ZIP checksum unchanged. |
@@ -63,7 +64,8 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | Installed PDF compression | Passed end to end from Finder's right-click Quick Actions menu: Morph imported the selected PDF, and **Compress PDF** produced a separate valid one-page PDF (276,382 bytes from a 1,452,001-byte source). `pdfinfo` validated the output; the original remained present at its original size. |
 | Sidebar and engine manager UI | Passed; all five sidebar buttons navigate, and the Engines page showed the detected engine versions and routes. |
 | Liquid Glass primary action and file picker | Passed on macOS 26.6.2; the installed universal app launched with its prominent system button style. Clicking **Choose Files** opened the native multi-file picker; Escape cancelled and returned to the overview. The macOS 14–25 bordered-button fallback compiled but was not runtime-tested on an older macOS version. Screenshot: [`morph-overview.png`](screenshots/morph-overview.png). |
-| Universal release package | Passed; `.build/release-artifacts-v12/Morph-0.1.0-macOS-universal.zip` contains arm64 + x86_64, `unzip -t` reported no archive errors, and `shasum -a 256 -c` verified SHA-256 `ddb1c7f3115c44f4c3b68da988925adcb2521bd35b9f0efbdfaf8b022ce97c24`. It is ad-hoc signed, fails Gatekeeper assessment and is not eligible for public distribution. |
+| Installed PDF page-range extraction | Passed live through the installed Finder Quick Action. Extracting page 1 from a one-page PDF produced a valid one-page output; the original SHA-256 stayed `8164fc731e39b6a8cd42133347fef2d900e49f019e100c9ff653bd2becd293ec`. |
+| Universal release package | Passed; `.build/release-artifacts-v13/Morph-0.1.0-macOS-universal.zip` contains arm64 + x86_64, `unzip -t` reported no archive errors, and `shasum -a 256 -c` verified SHA-256 `89a4a11000984072aeb74ed92f573fd7668087cf71e93392a8e6c766021ee83d`. It is ad-hoc signed, fails Gatekeeper assessment and is not eligible for public distribution. |
 | Dependency consent cancellation | Passed; the live **Uninstall FFmpeg?** confirmation was opened and cancelled. Morph continued to show FFmpeg installed, and no Homebrew install, uninstall or upgrade process ran. No package was installed or removed. |
 
 ## Limitations of this run

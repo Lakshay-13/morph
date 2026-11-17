@@ -194,6 +194,65 @@ public enum MorphFileOperations {
     }
 
     @discardableResult
+    public static func extractPDFPages(_ input: URL, pageRange: String, outputDirectory: URL? = nil) throws -> URL {
+        guard let source = PDFDocument(url: input), source.pageCount > 0 else {
+            throw MorphError.invalidInput("The selected PDF is unreadable or has no pages.")
+        }
+        let pageNumbers = try parsePDFPageRanges(pageRange, pageCount: source.pageCount)
+        let directory = outputDirectory ?? input.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let output = uniqueURL(baseName: input.deletingPathExtension().lastPathComponent + "-pages", extension: "pdf", directory: directory)
+        let temporary = temporaryFile(for: output)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        let extracted = PDFDocument()
+        extracted.documentAttributes = source.documentAttributes
+        for pageNumber in pageNumbers {
+            guard let page = source.page(at: pageNumber - 1), let copy = page.copy() as? PDFPage else {
+                throw MorphError.invalidInput("Morph could not copy PDF page \(pageNumber).")
+            }
+            extracted.insert(copy, at: extracted.pageCount)
+        }
+        guard extracted.pageCount == pageNumbers.count,
+              extracted.write(to: temporary),
+              PDFDocument(url: temporary)?.pageCount == pageNumbers.count else {
+            throw MorphError.invalidOutput("PDFKit could not write and verify the extracted pages.")
+        }
+        try commit(temporary, to: output)
+        return output
+    }
+
+    public static func parsePDFPageRanges(_ selection: String, pageCount: Int) throws -> [Int] {
+        let invalidSelection = MorphError.invalidInput("Use page numbers or ascending ranges, such as 1-3, 5.")
+        guard pageCount > 0 else { throw invalidSelection }
+        let items = selection.split(separator: ",", omittingEmptySubsequences: false)
+        guard !items.isEmpty else { throw invalidSelection }
+
+        var result: [Int] = []
+        var seen = Set<Int>()
+        for item in items {
+            let rangeParts = item.split(separator: "-", omittingEmptySubsequences: false)
+            guard rangeParts.count == 1 || rangeParts.count == 2 else { throw invalidSelection }
+            let numbers = rangeParts.compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            guard numbers.count == rangeParts.count else { throw invalidSelection }
+            let first = numbers[0]
+            let last = numbers.count == 2 ? numbers[1] : first
+            guard first >= 1, last <= pageCount else {
+                throw MorphError.invalidInput("Page numbers must be between 1 and \(pageCount).")
+            }
+            guard first <= last else { throw invalidSelection }
+            for number in first...last {
+                guard seen.insert(number).inserted else {
+                    throw MorphError.invalidInput("The page selection contains a duplicate number.")
+                }
+                result.append(number)
+            }
+        }
+        guard !result.isEmpty else { throw invalidSelection }
+        return result
+    }
+
+    @discardableResult
     public static func compressPDF(
         _ input: URL,
         preset: PDFCompressionPreset = .balanced,

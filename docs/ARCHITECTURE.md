@@ -6,7 +6,7 @@
 - **EngineRegistry** discovers local binaries and probes their available formats. A route is created only when the corresponding engine is installed and advertises the required input/output capability. FFmpeg output routes also require the encoder used by Morph's adapter.
 - **ConversionService** resolves an input extension, tries candidate routes in deterministic priority order, runs each registered `ConversionEngine`, validates the staged output and moves the first valid result to a unique destination. A failed adapter's staged output is removed before the next route is attempted. The `ConversionEngine` protocol supports adding independent adapters.
 - **MorphApp** provides file selection/drop, Finder file-open intake, format selection, batch execution, history, settings and explicit Homebrew actions.
-- **MorphFileOperations** holds additional operations that are not simple format edges: read-only image/PDF metadata inspection, image resize, PDF merge/split/compression and ZIP extraction. PDF compression is a fixed-argument Ghostscript process adapter and writes to a validated staging file.
+- **MorphFileOperations** holds additional operations that are not simple format edges: read-only image/PDF metadata inspection, image resize, PDF merge/page-range extraction/split/compression and ZIP extraction. PDF compression is a fixed-argument Ghostscript process adapter and writes to a validated staging file.
 
 ## Data flow
 

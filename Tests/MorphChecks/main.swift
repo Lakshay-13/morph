@@ -34,6 +34,7 @@ final class MorphCheckSuite {
         test("structured data") { try checkStructuredData($0) }
         test("archive repackaging") { try checkArchives($0) }
         test("image resize, PDF pages, and ZIP extraction") { try checkFileOperations($0) }
+        test("PDF page-range extraction") { try checkPDFPageRangeExtraction($0) }
         test("image and PDF metadata inspection") { try checkMetadataInspection($0) }
         test("mixed batch, collisions, and source preservation") { try checkBatchAndCollisions($0) }
         test("invalid input and partial-output cleanup") { try checkInvalidInput($0) }
@@ -379,6 +380,34 @@ final class MorphCheckSuite {
         } catch {
             try expect(try sha256(invalidImage) == invalidHash, "Failed inspection changed invalid input")
         }
+    }
+
+    private func checkPDFPageRangeExtraction(_ folder: URL) throws {
+        try expect(try MorphFileOperations.parsePDFPageRanges(" 1 - 2, 4 ", pageCount: 5) == [1, 2, 4], "Page-range parser did not preserve the requested order")
+        for invalidSelection in ["", "0", "3", "2-1", "1, 1", "1,,2", "a"] {
+            do {
+                _ = try MorphFileOperations.parsePDFPageRanges(invalidSelection, pageCount: 2)
+                throw CheckFailure("Invalid PDF page selection was accepted: \(invalidSelection)")
+            } catch is CheckFailure {
+                throw CheckFailure("Invalid PDF page selection was accepted: \(invalidSelection)")
+            } catch { }
+        }
+
+        let first = folder.appendingPathComponent("first.pdf")
+        let second = folder.appendingPathComponent("second.pdf")
+        try makeTextPDF(at: first, text: "First selected page")
+        try makeTextPDF(at: second, text: "Second selected page")
+        let source = try MorphFileOperations.mergePDFs([first, second], outputDirectory: folder)
+        let sourceHash = try sha256(source)
+        let extracted = try MorphFileOperations.extractPDFPages(source, pageRange: "2, 1", outputDirectory: folder)
+        guard let result = PDFDocument(url: extracted), result.pageCount == 2 else {
+            throw CheckFailure("Extracted PDF did not contain both requested pages")
+        }
+        try expect(result.page(at: 0)?.string?.contains("Second selected page") == true, "Extracted page order did not match the selection")
+        try expect(result.page(at: 1)?.string?.contains("First selected page") == true, "Second extracted page did not match the selection")
+        try expect(try sha256(source) == sourceHash, "Page extraction changed the source PDF")
+        let collision = try MorphFileOperations.extractPDFPages(source, pageRange: "1", outputDirectory: folder)
+        try expect(collision != extracted && PDFDocument(url: collision)?.pageCount == 1, "Page extraction did not create a collision-safe output")
     }
 
     private func checkInvalidInput(_ folder: URL) throws {
