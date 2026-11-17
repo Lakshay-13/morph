@@ -29,9 +29,9 @@
 
 ## Validation and release gates
 
-- The self-contained SwiftPM harness currently runs 13 groups, covering 23 distinct format pairs, real engine conversions, safe outputs, source checksums, collision handling, invalid input, missing engines, fallback, cancellation, office-route family constraints and a large image. See `TEST_REPORT.md`.
+- The self-contained SwiftPM harness currently runs 14 groups, covering 23 distinct format pairs plus a Ghostscript PDF compression operation, real engine conversions, safe outputs, source checksums, collision handling, invalid input, missing engines, fallback, cancellation, office-route family constraints and a large image. See `TEST_REPORT.md`.
 - Cover mixed and batch inputs, unsupported/missing engines, failed and invalid inputs, collisions, cancellation, cleanup and large inputs where practical.
 - A universal binary is not considered validated on Intel without an Intel runtime check. Record architecture coverage honestly.
-- The Finder right-click Quick Actions submenu displays the Morph action. Finder Services and the installed Automator workflow both imported a selected file; the installed app completed a PNG → JPEG conversion. The Quick Actions submenu item itself was not successfully clicked. The live dependency confirmation was opened and cancelled; an install was not approved or run.
+- The Finder right-click Quick Actions submenu displays the Morph action. Finder Services and the installed Automator workflow imported selected files; the installed app completed PNG → JPEG and PDF compression conversions. The Finder context-menu item itself was not directly clicked. The live dependency confirmation was opened and cancelled; an install was not approved or run.
 - Homebrew Cask requires a stable upstream artifact, checksum, local audit/install/uninstall checks and Gatekeeper-compliant distribution. The current machine has no Developer ID identity, so signing/notarization and public Cask eligibility remain blocked.
 - No engine or system dependency may be installed by the agent without a distinct explicit user approval.

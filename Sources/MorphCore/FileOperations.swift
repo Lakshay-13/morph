@@ -101,6 +101,48 @@ public enum MorphFileOperations {
     }
 
     @discardableResult
+    public static func compressPDF(
+        _ input: URL,
+        preset: PDFCompressionPreset = .balanced,
+        outputDirectory: URL? = nil,
+        cancellation: CancellationToken? = nil
+    ) throws -> URL {
+        guard let source = PDFDocument(url: input), source.pageCount > 0 else {
+            throw MorphError.invalidInput("The selected PDF is unreadable or has no pages.")
+        }
+        guard let ghostscript = ExecutableLocator.resolve(["gs"]) else {
+            throw MorphError.missingEngine(.ghostscript)
+        }
+
+        let directory = outputDirectory ?? input.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let output = uniqueURL(baseName: input.deletingPathExtension().lastPathComponent + "-compressed", extension: "pdf", directory: directory)
+        let temporary = temporaryFile(for: output)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        let result = try ProcessRunner.run(
+            executable: ghostscript,
+            arguments: [
+                "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
+                "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.7",
+                "-dPDFSETTINGS=\(preset.ghostscriptSetting)",
+                "-sOutputFile=\(temporary.path)", input.path,
+            ],
+            cancellation: cancellation
+        )
+        guard result.status == 0 else {
+            throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Ghostscript could not compress this PDF."
+                : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        guard let compressed = PDFDocument(url: temporary), compressed.pageCount == source.pageCount else {
+            throw MorphError.invalidOutput("The compressed PDF did not preserve all source pages.")
+        }
+        try commit(temporary, to: output)
+        return output
+    }
+
+    @discardableResult
     public static func extractZIP(_ input: URL, outputDirectory: URL? = nil) throws -> URL {
         guard input.pathExtension.lowercased() == "zip",
               let unzip = ExecutableLocator.resolve(["unzip"]),

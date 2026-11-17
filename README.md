@@ -11,7 +11,7 @@ Morph is a native SwiftUI macOS utility for converting and transforming files wi
 - Runtime format discovery from Apple ImageIO, FFmpeg codecs and containers, ImageMagick, Pandoc, Poppler and LibreOffice.
 - Fallback to another registered engine when a higher-priority adapter fails and a second route exists.
 - Native image conversion and image-to-PDF, audio/video conversion, document conversion, PDF text extraction, JSON/CSV/TSV/XML conversion and ZIP/TAR.GZ repackaging.
-- Quick actions for 50% image resizing, merging selected PDFs, splitting a PDF into pages and extracting ZIP archives.
+- Quick actions for 50% image resizing, merging selected PDFs, splitting a PDF into pages, preset-based PDF compression and extracting ZIP archives.
 - Output beside the source, in `~/Documents/Morph Output`, or in a chosen folder. Existing files are never replaced.
 - Local conversion history, progress, cancellation for conversions, and optional Finder reveal after completion.
 - An engine manager that requires an explicit confirmation before installing, updating or uninstalling Homebrew formulas.
@@ -33,13 +33,13 @@ Morph shows a conversion only when the detected input capability, output capabil
 | Documents | Pandoc routes for detected reader/writer formats; LibreOffice converts within text-document or presentation families and exports those files to PDF. PDF text extraction uses Poppler. |
 | Spreadsheets and data | LibreOffice converts within spreadsheet formats and exports them to PDF; Morph provides local JSON ↔ CSV, JSON ↔ XML and CSV ↔ TSV transformations. |
 | Archives | ZIP ↔ TAR.GZ repackaging and ZIP extraction. Archive paths are checked before extraction and extracted links are checked for escapes. |
-| PDF operations | Image-to-PDF, merge selected PDFs and split a PDF into one-page files, using PDFKit. |
+| PDF operations | Image-to-PDF, merge selected PDFs and split into pages with PDFKit; Ghostscript PDF compression with Compact, Balanced and Print quality presets. |
 
-The format registry includes other candidate types, but unsupported candidates are not shown as conversion choices. There are no active routes yet for 7z/RAR conversion, RAW processing, font conversion, YAML/TOML conversion, CAD, geospatial or scientific formats. PDF compression, page-range extraction, video trimming, metadata editing and batch renaming are also not implemented.
+The format registry includes other candidate types, but unsupported candidates are not shown as conversion choices. There are no active routes yet for 7z/RAR conversion, RAW processing, font conversion, YAML/TOML conversion, CAD, geospatial or scientific formats. Page-range extraction, video trimming, metadata editing and batch renaming are not implemented.
 
 ## Engines and dependencies
 
-Apple ImageIO and PDFKit, Morph's structured-data converter and macOS archive tools do not need separate engine installs. Optional engines are not bundled. The app can ask Homebrew to install these implemented adapters: FFmpeg, ImageMagick, Pandoc, Poppler and LibreOffice. It checks for updates only when requested. No formula is installed, upgraded or removed until the user confirms in a system alert. Morph runs one formula action at a time and disables the engine controls while checking bottle size, awaiting confirmation or running Homebrew.
+Apple ImageIO and PDFKit, Morph's structured-data converter and macOS archive tools do not need separate engine installs. Optional engines are not bundled. The app can ask Homebrew to install these implemented adapters: FFmpeg, ImageMagick, Pandoc, Poppler, Ghostscript and LibreOffice. It checks for updates only when requested. No formula is installed, upgraded or removed until the user confirms in a system alert. Morph runs one formula action at a time and disables the engine controls while checking bottle size, awaiting confirmation or running Homebrew. If PDF compression is requested without Ghostscript, Morph explains the dependency, asks before installing it, and retries compression after installation succeeds.
 
 When the user chooses Install, Morph requests the current Homebrew formula metadata to estimate the selected formula bottle's download size where a matching bottle is available. Required dependencies add to that size; Homebrew remains responsible for resolving and verifying the actual install plan. Morph does not download conversion engines on launch.
 
@@ -81,7 +81,7 @@ The development build is ad-hoc signed and is not the signed/notarized public re
 3. Choose the output location in Settings. The default is beside each original.
 4. Start the conversion. Morph writes to a temporary file, validates it, then saves with a unique name. Originals remain unchanged.
 
-The image quality setting applies to lossy image outputs. Resize quick actions scale images to 50% of their current longest edge and save JPEG copies.
+The image quality setting applies to lossy image outputs. Resize quick actions scale images to 50% of their current longest edge and save JPEG copies. Choose the PDF compression preset in Settings; compression writes a new PDF and may alter metadata or interactive PDF features. A compressed copy cannot retain the original digital signature.
 
 ## Development
 

@@ -276,10 +276,19 @@ struct ConvertView: View {
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                     .buttonStyle(.bordered)
-                                    .disabled(model.isRunningUtility || model.isConverting)
+                                    .accessibilityIdentifier("quick-action.\(action.rawValue.lowercased().replacingOccurrences(of: " ", with: "-"))")
+                                    .disabled(model.isRunningUtility || model.isConverting || model.activeEngineAction != nil)
                                 }
                             }
-                            if model.isRunningUtility { ProgressView("Working locally…") }
+                            if model.isRunningUtility {
+                                HStack {
+                                    ProgressView("Working locally…")
+                                    if model.isRunningUtilityCancellable {
+                                        Button("Cancel") { model.cancelUtility() }
+                                            .accessibilityIdentifier("utility.cancel")
+                                    }
+                                }
+                            }
                         }
                         .padding(15)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
@@ -430,7 +439,7 @@ struct HistoryRow: View {
 
 struct EnginesView: View {
     @EnvironmentObject private var model: MorphModel
-    private let externalEngines: [EngineID] = [.ffmpeg, .imageMagick, .pandoc, .poppler, .libreOffice]
+    private let externalEngines: [EngineID] = [.ffmpeg, .imageMagick, .pandoc, .poppler, .ghostscript, .libreOffice]
 
     var body: some View {
         ScrollView {
@@ -501,7 +510,7 @@ private struct EngineRow: View {
                     if let version = status?.version { Text(version).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(1) }
                 }
                 Text(id.summary).font(.caption).foregroundStyle(.secondary)
-                Text(status?.isInstalled == true ? "Installed · \(routeCount) advertised routes" : "Not installed · optional local engine")
+                Text(statusDescription)
                     .font(.caption2).foregroundStyle(status?.isInstalled == true ? .green : .secondary)
                 Text(capabilitySummary).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             }
@@ -519,18 +528,27 @@ private struct EngineRow: View {
                 Button("Uninstall") { model.uninstallEngine(id) }.buttonStyle(.bordered)
             } else if id.homebrewFormula != nil {
                 Button("Install…") { model.installEngine(id) }.buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("engine.install.\(id.rawValue)")
             }
         }
-        .disabled(model.activeEngineAction != nil)
+        .disabled(model.activeEngineAction != nil || model.isConverting || model.isRunningUtility)
         .padding(15).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 
     private var capabilitySummary: String {
+        if id == .ghostscript { return "Operation: PDF compression presets" }
         let pairs = Array(Set((model.registry?.routes ?? []).filter { $0.engine == id }.map {
             ".\($0.inputExtension) → .\($0.output.fileExtension)"
         })).sorted()
         guard !pairs.isEmpty else { return "No conversion routes currently available." }
         return "Formats: " + pairs.prefix(4).joined(separator: ", ") + (pairs.count > 4 ? " · +\(pairs.count - 4)" : "")
+    }
+
+    private var statusDescription: String {
+        if id == .ghostscript {
+            return status?.isInstalled == true ? "Installed · PDF compression enabled" : "Not installed · enables PDF compression"
+        }
+        return status?.isInstalled == true ? "Installed · \(routeCount) advertised routes" : "Not installed · optional local engine"
     }
 }
 
@@ -564,6 +582,20 @@ struct SettingsView: View {
                         Text("\(Int(model.settings.imageQuality * 100))%").monospacedDigit().frame(width: 44, alignment: .trailing)
                     }
                     Text("Used by lossy image formats such as JPEG and WebP. Supported formats preserve metadata when the engine allows it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(18).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15))
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("PDF compression").font(.headline)
+                    Picker("Compression preset", selection: $model.settings.pdfCompressionPreset) {
+                        ForEach(PDFCompressionPreset.allCases) { preset in
+                            Text(preset.displayName).tag(preset)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("settings.pdf-compression-preset")
+                    Text("Compact files use stronger image downsampling. Print quality keeps more detail. Compression creates a new copy and may change metadata, links, forms or annotations; signatures on the original will not remain valid. Ghostscript is installed only after you approve it.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(18).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15))

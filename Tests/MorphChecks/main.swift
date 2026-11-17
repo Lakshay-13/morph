@@ -29,6 +29,7 @@ final class MorphCheckSuite {
         test("audio and video with FFmpeg") { try checkAudioVideo($0) }
         test("documents and PDF text") { try checkDocuments($0) }
         test("LibreOffice routes stay within compatible format families") { _ in try checkLibreOfficeRoutes() }
+        test("PDF compression with Ghostscript") { try checkPDFCompression($0) }
         test("structured data") { try checkStructuredData($0) }
         test("archive repackaging") { try checkArchives($0) }
         test("image resize, PDF pages, and ZIP extraction") { try checkFileOperations($0) }
@@ -205,6 +206,44 @@ final class MorphCheckSuite {
         let tsv = try convert(csv2, to: "tsv", category: .spreadsheet, output: output)
         let csvAgain = try convert(tsv, to: "csv", category: .spreadsheet, output: output)
         try expect(try String(contentsOf: csvAgain, encoding: .utf8).contains("Grace,3"), "TSV round trip lost the row")
+    }
+
+    private func checkPDFCompression(_ folder: URL) throws {
+        guard registry.status(for: .ghostscript)?.isInstalled == true else {
+            throw CheckSkip("Ghostscript is not installed")
+        }
+        let input = folder.appendingPathComponent("report.pdf")
+        let output = folder.appendingPathComponent("output", isDirectory: true)
+        try makeTextPDF(at: input, text: "Morph PDF compression preserves this text")
+        let originalHash = try sha256(input)
+        let compressed = try MorphFileOperations.compressPDF(input, preset: .balanced, outputDirectory: output)
+        guard let document = PDFDocument(url: compressed) else {
+            throw CheckFailure("Compressed PDF could not be reopened")
+        }
+        try expect(document.pageCount == 1, "PDF compression changed the page count")
+        try expect(document.page(at: 0)?.string?.contains("Morph PDF compression preserves this text") == true, "PDF compression lost page text")
+        try OutputValidator.validate(compressed, format: MorphFormat("pdf", "PDF", .document), engine: .ghostscript)
+        try expect(try sha256(input) == originalHash, "PDF compression changed the original")
+        let outputNames = try FileManager.default.contentsOfDirectory(atPath: output.path)
+        try expect(outputNames == [compressed.lastPathComponent], "PDF compression left a staging artifact")
+
+        for preset in [PDFCompressionPreset.compact, .printQuality] {
+            let presetOutput = folder.appendingPathComponent(preset.rawValue, isDirectory: true)
+            let result = try MorphFileOperations.compressPDF(input, preset: preset, outputDirectory: presetOutput)
+            try expect(PDFDocument(url: result)?.pageCount == 1, "\(preset.displayName) preset changed the PDF page count")
+            try expect(PDFDocument(url: result)?.page(at: 0)?.string?.contains("Morph PDF compression preserves this text") == true, "\(preset.displayName) preset lost page text")
+        }
+
+        let cancelledOutput = folder.appendingPathComponent("cancelled", isDirectory: true)
+        let cancellation = CancellationToken()
+        cancellation.cancel()
+        do {
+            _ = try MorphFileOperations.compressPDF(input, outputDirectory: cancelledOutput, cancellation: cancellation)
+            throw CheckFailure("PDF compression ignored a pre-cancelled token")
+        } catch MorphError.cancelled {
+            try expect(try FileManager.default.contentsOfDirectory(atPath: cancelledOutput.path).isEmpty, "Cancelled PDF compression left a staged output")
+            try expect(try sha256(input) == originalHash, "Cancelled PDF compression changed the original")
+        }
     }
 
     private func checkArchives(_ folder: URL) throws {

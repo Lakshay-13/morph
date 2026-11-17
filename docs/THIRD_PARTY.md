@@ -9,10 +9,11 @@ Morph itself is Apache-2.0. The Swift package has no third-party Swift package d
 | ImageMagick | Optional image conversion | Apache-2.0 upstream license. Not bundled. |
 | Pandoc | Optional document conversion | GPL-2.0-or-later upstream distribution. Not bundled. |
 | Poppler | PDF text extraction | GPL-2.0-or-later family; verify the exact package license for the installed build. Not bundled. |
+| Ghostscript | PDF compression presets | [Homebrew identifies the formula as AGPL-3.0-or-later](https://formulae.brew.sh/formula/ghostscript); [Artifex describes its AGPL and commercial license choices](https://www.ghostscript.com/faq/index.html). It is an independently installed process and is not bundled or linked into Morph; users must review the terms for their use. |
 | LibreOffice | Office file conversion | MPL-2.0 with additional component licenses in the upstream distribution. Not bundled. |
 | macOS `ditto`, `zip`, `unzip` and `tar` | Archive conversion/extraction | Apple/macOS system tools; not redistributed. |
 
-Ghostscript, libvips and 7-Zip were evaluated as possible future tools. They have no current Morph conversion adapter and are not offered in the dependency UI. This avoids installing tools that do not currently enable a Morph operation. If an adapter is added, its version-specific formula and license details must be recorded here before release.
+libvips and 7-Zip were evaluated as possible future tools. They have no current Morph conversion adapter and are not offered in the dependency UI. If an adapter is added, its version-specific formula and license details must be recorded here before release.
 
 ## Distribution rule
 

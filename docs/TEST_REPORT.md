@@ -5,7 +5,7 @@
 **Run date:** 2026-11-17
 
 **Command:** `Scripts/run-checks.sh` with SwiftPM using the installed Command Line Tools
-**Result:** 13 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs were executed with real generated files.
+**Result:** 14 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs and one PDF compression operation were executed with real generated files.
 
 The harness checks that each conversion output exists and is non-empty, runs `OutputValidator`, verifies the generated content or media properties where practical, and checks SHA-256 of the original file before and after conversion. Fixtures are generated locally; no network service is used for conversion.
 
@@ -45,6 +45,7 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 |---|---|
 | Image resize to 50% | Passed; a 160 × 80 PNG produced an 80 × 40 JPEG, source checksum unchanged. |
 | PDF merge and split | Passed; two one-page PDFs merged to two pages and split back into two one-page PDFs. Input checksums unchanged. |
+| PDF compression | Passed with Ghostscript 10.07.0 and the Balanced preset; PDFKit reopened the output with the same page count and source text, the input checksum stayed unchanged, and no staging file remained. |
 | LibreOffice route family constraints | Passed; DOCX, PPTX and XLSX each expose PDF export, while document ↔ spreadsheet and presentation → spreadsheet routes are not advertised. |
 | ZIP extraction | Passed; extracted file content matched, ZIP checksum unchanged. |
 | Invalid image input | Passed; conversion failed, original remained unchanged, no partial output remained. |
@@ -55,15 +56,16 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | Conversion staging cleanup | Passed; no `.morph-*.staging` directory or `.partial` file remained after PNG → ICO or after failed/fallback engine attempts. |
 | Installed app and Finder integration | Passed; installed Morph 0.1.0 at `~/Applications/Morph.app` is universal (`arm64 x86_64`). Finder's right-click Quick Actions submenu displayed **Convert with Morph**. The Finder Services menu also listed the enabled action; invoking it imported a selected PNG into Morph. The installed Automator workflow CLI independently imported the same fixture and consumed its temporary manifest. A direct click on the Quick Actions submenu item was not confirmed. |
 | Installed app conversion | Passed; the installed 0.1.0 app converted the Finder fixture PNG to JPEG through its UI. `sips` identified a non-empty 1254 × 1254 JPEG; the original PNG SHA-256 remained `dec0374ba45276a3c08ac50fb11f3569ecca20198741eff419d5eaa3dd6c31a0`. |
+| Installed PDF compression | Passed; the installed Automator workflow imported a generated PDF, and the installed app's **Compress PDF** action produced a separate valid one-page PDF (276,382 bytes from a 1,452,001-byte source). `pdfinfo` validated the output; the original remained present at its original size. |
 | Sidebar and engine manager UI | Passed; all five sidebar buttons navigate, and the Engines page showed the detected engine versions and routes. |
 | Dependency consent cancellation | Passed; the live **Uninstall FFmpeg?** confirmation was opened and cancelled. Morph continued to show FFmpeg installed, and no Homebrew install, uninstall or upgrade process ran. No package was installed or removed. |
 
 ## Limitations of this run
 
-- The harness is a self-contained SwiftPM executable rather than XCTest. SwiftPM emits a non-fatal XCTest path warning because the selected Command Line Tools SDK cannot answer `xcrun --show-sdk-platform-path`; the executable and all 13 groups still build and run.
+- The harness is a self-contained SwiftPM executable rather than XCTest. SwiftPM emits a non-fatal XCTest path warning because the selected Command Line Tools SDK cannot answer `xcrun --show-sdk-platform-path`; the executable and all 14 groups still build and run.
 - CoreGraphics emits a PDF diagnostic during fixture/PDF processing. PDFKit and Poppler checks still pass, and generated PDFs reopened with the expected page count/content.
-- Cancellation was tested at the process-runner layer and the dependency consent Cancel button was exercised live. The installed Finder context menu showed the Quick Action, but only Finder Services and Automator CLI execution were used to invoke it; the Quick Actions submenu item itself was not clicked successfully.
+- Cancellation was tested at the process-runner layer and the dependency consent Cancel button was exercised live. The installed Finder Quick Action workflow was run through Automator CLI and its app actions were tested; the Finder context-menu item itself was not clicked during this run.
 - Archive traversal rejection is implemented, but this run exercised safe ZIP extraction rather than a malicious traversal ZIP fixture.
 - The app and all real conversions were executed on Apple Silicon. An Intel runtime was not available for validation.
 - The Homebrew Cask draft passes Ruby syntax validation, but Homebrew audit/install checks remain unverified because Homebrew refuses to run until the Xcode license is accepted. The local release archive is ad hoc signed, so it is not eligible for public Cask submission.
-- The dependency confirmation and Cancel action were exercised live for an uninstall request. All supported optional engines are already installed, so an install confirmation and package action could not be exercised on this Mac without first removing an engine. Homebrew actions remain gated by the unaccepted Xcode license.
+- The dependency confirmation and Cancel action were exercised live for an uninstall request. All supported optional engines are already installed, so a missing-Ghostscript install confirmation and automatic PDF retry could not be exercised on this Mac without first removing an engine. Homebrew actions remain gated by the unaccepted Xcode license.

@@ -15,6 +15,7 @@ enum QuickAction: String, CaseIterable, Identifiable, Hashable {
     case resizeImages = "Resize images to 50%"
     case mergePDFs = "Merge selected PDFs"
     case splitPDF = "Split PDF into pages"
+    case compressPDF = "Compress PDF"
     case extractZIP = "Extract ZIP archive"
 
     var id: String { rawValue }
@@ -23,16 +24,45 @@ enum QuickAction: String, CaseIterable, Identifiable, Hashable {
         case .resizeImages: "arrow.down.right.and.arrow.up.left"
         case .mergePDFs: "doc.on.doc"
         case .splitPDF: "square.split.2x1"
+        case .compressPDF: "arrow.down.doc"
         case .extractZIP: "archivebox"
         }
     }
 }
 
 struct MorphSettings: Codable, Sendable {
-    var outputMode: OutputMode = .alongsideOriginal
+    var outputMode: OutputMode
     var customOutputPath: String?
-    var imageQuality: Double = 0.85
-    var revealOutputAfterConversion = true
+    var imageQuality: Double
+    var revealOutputAfterConversion: Bool
+    var pdfCompressionPreset: PDFCompressionPreset
+
+    init(
+        outputMode: OutputMode = .alongsideOriginal,
+        customOutputPath: String? = nil,
+        imageQuality: Double = 0.85,
+        revealOutputAfterConversion: Bool = true,
+        pdfCompressionPreset: PDFCompressionPreset = .balanced
+    ) {
+        self.outputMode = outputMode
+        self.customOutputPath = customOutputPath
+        self.imageQuality = imageQuality
+        self.revealOutputAfterConversion = revealOutputAfterConversion
+        self.pdfCompressionPreset = pdfCompressionPreset
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case outputMode, customOutputPath, imageQuality, revealOutputAfterConversion, pdfCompressionPreset
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        outputMode = try values.decodeIfPresent(OutputMode.self, forKey: .outputMode) ?? .alongsideOriginal
+        customOutputPath = try values.decodeIfPresent(String.self, forKey: .customOutputPath)
+        imageQuality = try values.decodeIfPresent(Double.self, forKey: .imageQuality) ?? 0.85
+        revealOutputAfterConversion = try values.decodeIfPresent(Bool.self, forKey: .revealOutputAfterConversion) ?? true
+        pdfCompressionPreset = try values.decodeIfPresent(PDFCompressionPreset.self, forKey: .pdfCompressionPreset) ?? .balanced
+    }
 }
 
 struct HistoryItem: Codable, Identifiable, Sendable {
@@ -60,10 +90,12 @@ final class MorphModel: ObservableObject {
     @Published private(set) var history: [HistoryItem] = []
     @Published private(set) var updatesAvailable: Set<EngineID> = []
     @Published private(set) var activeEngineAction: EngineID?
+    @Published private(set) var isRunningUtilityCancellable = false
     @Published var settings: MorphSettings { didSet { saveSettings() } }
     @Published var selectedSection = AppSection.overview
 
     private var cancellation: CancellationToken?
+    private var utilityCancellation: CancellationToken?
     private let settingsKey = "com.lakshaychawla.Morph.settings"
     private let historyURL: URL
 
@@ -96,7 +128,8 @@ final class MorphModel: ObservableObject {
 
     var availableRouteCount: Int { registry?.routes.count ?? 0 }
     var activeEngineCount: Int {
-        let routeEngines = Set(registry?.routes.map(\.engine) ?? [])
+        var routeEngines = Set(registry?.routes.map(\.engine) ?? [])
+        if registry?.status(for: .ghostscript)?.isInstalled == true { routeEngines.insert(.ghostscript) }
         return routeEngines.union([.nativeImage, .nativePDF, .structuredData, .archive]).count
     }
 
@@ -108,7 +141,10 @@ final class MorphModel: ObservableObject {
             actions.append(.resizeImages)
         }
         if extensions.count >= 2 && extensions.allSatisfy({ $0 == "pdf" }) { actions.append(.mergePDFs) }
-        if extensions.count == 1, extensions[0] == "pdf" { actions.append(.splitPDF) }
+        if extensions.count == 1, extensions[0] == "pdf" {
+            actions.append(.splitPDF)
+            actions.append(.compressPDF)
+        }
         if extensions.count == 1, extensions[0] == "zip" { actions.append(.extractZIP) }
         return actions
     }
@@ -155,12 +191,17 @@ final class MorphModel: ObservableObject {
     }
 
     func refreshEngines() {
+        refreshEngines(onCompletion: nil)
+    }
+
+    private func refreshEngines(onCompletion: (() -> Void)?) {
         isDiscovering = true
         Task.detached(priority: .utility) {
             let freshRegistry = EngineRegistry.discover()
             await MainActor.run {
                 self.registry = freshRegistry
                 self.isDiscovering = false
+                onCompletion?()
             }
         }
     }
@@ -236,11 +277,31 @@ final class MorphModel: ObservableObject {
     }
 
     func perform(_ action: QuickAction) {
-        guard quickActions.contains(action), !isConverting, !isRunningUtility else { return }
+        guard quickActions.contains(action), !isConverting, !isRunningUtility, activeEngineAction == nil else { return }
+        if action == .compressPDF, isDiscovering {
+            conversionMessage = "Checking local conversion engines…"
+            return
+        }
+        if action == .compressPDF, registry?.status(for: .ghostscript)?.isInstalled != true {
+            selectedSection = .engines
+            installEngine(
+                .ghostscript,
+                reason: "Ghostscript is required for local PDF compression. It also enables additional PDF and PostScript processing.",
+                onSuccess: { [weak self] in
+                    self?.selectedSection = .convert
+                    self?.perform(action)
+                },
+                onCancel: { [weak self] in self?.selectedSection = .convert }
+            )
+            return
+        }
         let inputs = selectedFiles
         let currentSettings = settings
         let outputDirectories = inputs.map { Self.outputDirectory(for: $0, settings: currentSettings) }
         isRunningUtility = true
+        let utilityToken = CancellationToken()
+        utilityCancellation = action == .compressPDF ? utilityToken : nil
+        isRunningUtilityCancellable = action == .compressPDF
         conversionMessage = "Preparing \(action.rawValue.lowercased())…"
         lastError = nil
 
@@ -256,14 +317,29 @@ final class MorphModel: ObservableObject {
                     outputs = [try MorphFileOperations.mergePDFs(inputs, outputDirectory: outputDirectories.first)]
                 case .splitPDF:
                     outputs = try MorphFileOperations.splitPDF(inputs[0], outputDirectory: outputDirectories[0])
+                case .compressPDF:
+                    outputs = [try MorphFileOperations.compressPDF(
+                        inputs[0],
+                        preset: currentSettings.pdfCompressionPreset,
+                        outputDirectory: outputDirectories[0],
+                        cancellation: utilityToken
+                    )]
                 case .extractZIP:
                     outputs = [try MorphFileOperations.extractZIP(inputs[0], outputDirectory: outputDirectories[0])]
                 }
                 await MainActor.run {
                     self.isRunningUtility = false
+                    self.utilityCancellation = nil
+                    self.isRunningUtilityCancellable = false
                     self.conversionMessage = "Created \(outputs.count) output item\(outputs.count == 1 ? "" : "s")."
                     self.history.insert(contentsOf: outputs.map {
-                        HistoryItem(id: UUID(), inputName: inputs[0].lastPathComponent, outputPath: $0.path, engineName: action == .resizeImages ? EngineID.nativeImage.displayName : (action == .extractZIP ? EngineID.archive.displayName : EngineID.nativePDF.displayName), date: Date())
+                        let engine: EngineID = switch action {
+                        case .resizeImages: .nativeImage
+                        case .extractZIP: .archive
+                        case .compressPDF: .ghostscript
+                        default: .nativePDF
+                        }
+                        return HistoryItem(id: UUID(), inputName: inputs[0].lastPathComponent, outputPath: $0.path, engineName: engine.displayName, date: Date())
                     }, at: 0)
                     self.history = Array(self.history.prefix(200))
                     self.saveHistory()
@@ -274,30 +350,50 @@ final class MorphModel: ObservableObject {
             } catch {
                 await MainActor.run {
                     self.isRunningUtility = false
-                    self.lastError = error.localizedDescription
-                    self.conversionMessage = "The operation could not be completed."
+                    self.utilityCancellation = nil
+                    self.isRunningUtilityCancellable = false
+                    if let morphError = error as? MorphError, case .cancelled = morphError {
+                        self.lastError = nil
+                        self.conversionMessage = "PDF compression cancelled. The original was left unchanged."
+                    } else {
+                        self.lastError = error.localizedDescription
+                        self.conversionMessage = "The operation could not be completed."
+                    }
                 }
             }
         }
     }
 
-    func installEngine(_ id: EngineID) {
-        guard let formula = id.homebrewFormula, activeEngineAction == nil else { return }
+    func cancelUtility() {
+        utilityCancellation?.cancel()
+    }
+
+    func installEngine(
+        _ id: EngineID,
+        reason: String? = nil,
+        onSuccess: (() -> Void)? = nil,
+        onCancel: (() -> Void)? = nil
+    ) {
+        guard let formula = id.homebrewFormula, activeEngineAction == nil, !isConverting, !isRunningUtility else { return }
         activeEngineAction = id
+        conversionMessage = "Checking \(id.displayName) download size…"
         Task {
             let estimate = await Self.estimatedBottleSize(formula: formula)
             let estimateText = estimate.map { "The current \(formula) bottle is approximately \($0) to download; required dependencies are additional." }
                 ?? "A bottle size estimate is unavailable. Homebrew will resolve the formula and dependency download sizes after confirmation."
-            confirmEngineAction(id: id, action: "Install", message: "Morph will ask Homebrew to install the ‘\(formula)’ formula and any required dependencies. Homebrew verifies package checksums. \(estimateText) No engine is downloaded until you confirm here.", cancelled: { [weak self] in
+            let reasonText = reason.map { "\($0)\n\n" } ?? ""
+            confirmEngineAction(id: id, action: "Install", message: "\(reasonText)Morph will ask Homebrew to install the ‘\(formula)’ formula and any required dependencies. Homebrew verifies package checksums. \(estimateText) No engine is downloaded until you confirm here.", cancelled: { [weak self] in
                 self?.finishEngineAction(id)
+                self?.conversionMessage = "Install cancelled. No output was created."
+                onCancel?()
             }) { [weak self] in
-                self?.runHomebrew(engine: id, arguments: ["install", "--formula", formula], successMessage: "\(id.displayName) installed.")
+                self?.runHomebrew(engine: id, arguments: ["install", "--formula", formula], successMessage: "\(id.displayName) installed.", onSuccess: onSuccess)
             }
         }
     }
 
     func uninstallEngine(_ id: EngineID) {
-        guard let formula = id.homebrewFormula, activeEngineAction == nil else { return }
+        guard let formula = id.homebrewFormula, activeEngineAction == nil, !isConverting, !isRunningUtility else { return }
         activeEngineAction = id
         confirmEngineAction(id: id, action: "Uninstall", message: "Homebrew will remove the ‘\(formula)’ formula. Other formulas and shared dependencies are left in place.", cancelled: { [weak self] in
             self?.finishEngineAction(id)
@@ -332,7 +428,7 @@ final class MorphModel: ObservableObject {
     }
 
     func updateEngine(_ id: EngineID) {
-        guard let formula = id.homebrewFormula, activeEngineAction == nil else { return }
+        guard let formula = id.homebrewFormula, activeEngineAction == nil, !isConverting, !isRunningUtility else { return }
         activeEngineAction = id
         confirmEngineAction(id: id, action: "Update", message: "Homebrew will upgrade the ‘\(formula)’ formula and may download dependencies. No update starts until you confirm here.", cancelled: { [weak self] in
             self?.finishEngineAction(id)
@@ -369,7 +465,7 @@ final class MorphModel: ObservableObject {
         else { cancelled() }
     }
 
-    private func runHomebrew(engine id: EngineID, arguments: [String], successMessage: String, refreshAfter: Bool = true) {
+    private func runHomebrew(engine id: EngineID, arguments: [String], successMessage: String, refreshAfter: Bool = true, onSuccess: (() -> Void)? = nil) {
         guard let brew = ExecutableLocator.resolve(["brew"]) else {
             finishEngineAction(id)
             lastError = "Homebrew is not installed. Install it from https://brew.sh, then try again."
@@ -383,10 +479,17 @@ final class MorphModel: ObservableObject {
                     throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Homebrew exited with status \(result.status)." : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
                 }
                 await MainActor.run {
-                    self.finishEngineAction(id)
                     self.conversionMessage = successMessage
                     if arguments.first == "install" || arguments.first == "upgrade" { self.updatesAvailable.removeAll() }
-                    if refreshAfter { self.refreshEngines() }
+                    if refreshAfter {
+                        self.refreshEngines {
+                            self.finishEngineAction(id)
+                            onSuccess?()
+                        }
+                    } else {
+                        self.finishEngineAction(id)
+                        onSuccess?()
+                    }
                 }
             } catch {
                 await MainActor.run {

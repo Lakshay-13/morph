@@ -9,6 +9,30 @@ public enum FormatCategory: String, CaseIterable, Codable, Sendable {
     case archive = "Archives"
 }
 
+public enum PDFCompressionPreset: String, CaseIterable, Codable, Identifiable, Sendable {
+    case compact
+    case balanced
+    case printQuality
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .compact: "Compact file"
+        case .balanced: "Balanced"
+        case .printQuality: "Print quality"
+        }
+    }
+
+    var ghostscriptSetting: String {
+        switch self {
+        case .compact: "/screen"
+        case .balanced: "/ebook"
+        case .printQuality: "/printer"
+        }
+    }
+}
+
 public struct MorphFormat: Hashable, Identifiable, Codable, Sendable {
     public let fileExtension: String
     public let displayName: String
@@ -93,7 +117,7 @@ public enum EngineID: String, CaseIterable, Codable, Sendable {
         case .libvips: "Memory-efficient conversion and resizing for large images."
         case .pandoc: "Convert supported documents, markup and presentations."
         case .poppler: "Extract text and render PDF pages."
-        case .ghostscript: "PDF and PostScript processing."
+        case .ghostscript: "Compress PDFs locally with selectable Ghostscript presets."
         case .sevenZip: "7z, XZ, BZIP2 and additional archive formats."
         case .libreOffice: "Office document, spreadsheet and presentation conversions."
         }

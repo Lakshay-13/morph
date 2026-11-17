@@ -6,7 +6,7 @@
 - **EngineRegistry** discovers local binaries and probes their available formats. A route is created only when the corresponding engine is installed and advertises the required input/output capability. FFmpeg output routes also require the encoder used by Morph's adapter.
 - **ConversionService** resolves an input extension, tries candidate routes in deterministic priority order, runs each registered `ConversionEngine`, validates the staged output and moves the first valid result to a unique destination. A failed adapter's staged output is removed before the next route is attempted. The `ConversionEngine` protocol supports adding independent adapters.
 - **MorphApp** provides file selection/drop, Finder file-open intake, format selection, batch execution, history, settings and explicit Homebrew actions.
-- **MorphFileOperations** holds additional native operations that are not simple format edges: resize, PDF merge/split and ZIP extraction.
+- **MorphFileOperations** holds additional operations that are not simple format edges: resize, PDF merge/split/compression and ZIP extraction. PDF compression is a fixed-argument Ghostscript process adapter and writes to a validated staging file.
 
 ## Data flow
 
@@ -40,11 +40,11 @@ The action appears under Finder's **Quick Actions** context menu. Finder Sync is
 3. Runs fixed version/capability queries such as `ffmpeg -demuxers`, `-muxers`, `-encoders`, ImageMagick's format listing, Pandoc's reader/writer listings, and LibreOffice's headless version probe.
 4. Produces conversion routes for the installed and implemented adapters.
 
-Routes are deterministic: built-in adapters are preferred, followed by FFmpeg/Pandoc/Poppler, then other optional adapters. LibreOffice is listed only after a real executable is found. `libvips`, Ghostscript and 7-Zip are probed as future candidates but do not currently have user-facing adapters or routes.
+Routes are deterministic: built-in adapters are preferred, followed by FFmpeg/Pandoc/Poppler, then other optional adapters. LibreOffice is listed only after a real executable is found. Ghostscript provides a PDF-compression operation outside the route graph. `libvips` and 7-Zip are probed as future candidates without current Morph conversion adapters.
 
 ## Dependency actions
 
-The engine screen is the only place that can request a package action. Morph checks Homebrew formula metadata for a bottle size estimate after the user selects Install, then asks for confirmation. The actual install/update/uninstall uses a fixed `brew` invocation. A single-operation gate disables all engine controls while the estimate, confirmation or Homebrew process is active, preventing duplicate or concurrent package-manager operations. Homebrew checks package checksums. Morph refreshes capabilities after successful install or uninstall. Network availability and the Xcode license state can prevent Homebrew from running.
+The engine screen is the place to manage packages. If PDF compression is requested without Ghostscript, Morph explains why it is needed, checks Homebrew formula metadata for a bottle size estimate, then asks for confirmation. After an approved install succeeds, Morph refreshes engine discovery and retries that compression request. Other installs, updates and uninstalls use the same confirmation flow. All package actions use fixed `brew` invocations. A single-operation gate disables engine controls while the estimate, confirmation or Homebrew process is active, preventing duplicate or concurrent package-manager operations. Homebrew checks package checksums. Network availability and the Xcode license state can prevent Homebrew from running.
 
 ## Local storage
 
