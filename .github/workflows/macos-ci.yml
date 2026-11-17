@@ -63,8 +63,13 @@ jobs:
 
       - name: Audit the Homebrew Cask draft
         run: |
-          brew audit --cask distribution/homebrew/morph.rb
-          brew style --only-cops Cask distribution/homebrew/morph.rb
+          tap="codex/morph-cask-validation"
+          brew tap-new --no-git "$tap"
+          tap_dir="$(brew --repository "$tap")"
+          mkdir -p "$tap_dir/Casks"
+          cp distribution/homebrew/morph.rb "$tap_dir/Casks/morph.rb"
+          brew audit --cask "$tap/morph"
+          brew style --cask "$tap/morph"
 
       - name: Build package
         run: MORPH_VERSION=0.1.0 MORPH_DIST_DIR="$RUNNER_TEMP/morph-dist" Scripts/package-release.sh
