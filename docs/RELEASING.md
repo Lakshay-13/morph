@@ -14,7 +14,7 @@ The latest local package is `.build/release-artifacts-v11/Morph-0.1.0-macOS-univ
 
 ## Developer ID signing and notarization
 
-Current machine status (2026-11-18): Xcode 27.0 is selected and its license is accepted, but Xcode has no developer account signed in. There are zero valid code-signing identities and no `morph-notary` Keychain profile. Homebrew's audit also reports the standalone Command Line Tools package as 15.4 and requires 26.3 or newer. Software Update did not offer a Command Line Tools update; install a current package from Apple Developer Downloads to unblock the audit.
+Current machine status (2026-11-18): Xcode 27.0 is selected and its license is accepted, but Xcode has no developer account signed in. There are zero valid code-signing identities and no `morph-notary` Keychain profile. Homebrew 7.0.14 reports that standalone Command Line Tools 15.4 does not support macOS 26 and requests Command Line Tools for Xcode 27.0. Software Update does not offer that package, and `xcode-select --install` says the old tools are already installed. Download the current package from [Apple Developer Downloads](https://developer.apple.com/download/all/) to unblock the audit.
 
 Before public distribution:
 
@@ -38,7 +38,7 @@ Before public distribution:
    ```
 
 6. Confirm notarization status, staple the ticket, verify the signature and Gatekeeper assessment, and test the archive on clean arm64 and Intel Macs.
-7. Update the standalone Command Line Tools package to version 26.3 or newer, then run the Homebrew Cask audit, install, launch and uninstall checks using the final signed archive and checksum.
+7. Install Command Line Tools for Xcode 27.0, then run the Homebrew Cask audit, install, launch and uninstall checks using the final signed archive and checksum.
 
 With a Developer ID identity and stored notary profile, the script submits the archive using `notarytool`, staples and validates the ticket, verifies the code signature, and runs `spctl` Gatekeeper assessment before rebuilding the final archive and checksum. Without both values, it intentionally produces a local ad-hoc package and prints that the artifact is not eligible for public distribution. Do not disable Gatekeeper or advise users to bypass it.
 
