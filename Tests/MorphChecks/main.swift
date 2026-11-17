@@ -93,6 +93,9 @@ final class MorphCheckSuite {
             let icon = try ConversionService(registry: isolatedRegistry).convert(iconRequest)
             try expect(FileManager.default.fileExists(atPath: icon.outputURL.path), "ICO output is missing")
             try expect(try sha256(png) == originalHash, "ICO conversion changed the source image")
+            let leftovers = try FileManager.default.contentsOfDirectory(atPath: output.path)
+                .filter { $0.hasPrefix(".morph-") || $0.contains(".partial") }
+            try expect(leftovers.isEmpty, "ICO conversion left staging artifacts: \(leftovers)")
             print("  PASS  .png → .ico via ImageMagick")
         }
     }

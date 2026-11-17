@@ -57,9 +57,15 @@ public final class ConversionService {
                 lastFailure = "No conversion adapter is registered for \(route.engine.displayName)."
                 continue
             }
-            let temporaryName = ".\(finalURL.deletingPathExtension().lastPathComponent).morph-\(UUID().uuidString).partial.\(request.outputFormat.fileExtension)"
-            let temporaryURL = request.outputDirectory.appendingPathComponent(temporaryName)
-            defer { try? FileManager.default.removeItem(at: temporaryURL) }
+            let stagingDirectory = request.outputDirectory.appendingPathComponent(".morph-\(UUID().uuidString).staging", isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: false)
+            } catch {
+                lastFailure = "Morph could not create a safe staging folder: \(error.localizedDescription)"
+                continue
+            }
+            defer { try? FileManager.default.removeItem(at: stagingDirectory) }
+            let temporaryURL = stagingDirectory.appendingPathComponent("output.partial.\(request.outputFormat.fileExtension)")
             let context = ConversionContext(route: route, request: request, temporaryOutputURL: temporaryURL, cancellation: cancellation)
             do {
                 try engine.convert(context: context)

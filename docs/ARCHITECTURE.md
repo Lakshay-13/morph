@@ -23,7 +23,7 @@ Finder Quick Action or file picker
      unique staged output → validator → collision-safe final path
 ```
 
-The source file is not used as an output path. Failed and cancelled jobs remove their temporary output. Successful conversions validate before the final move. Collisions receive a numeric suffix rather than replacing a file.
+The source file is not used as an output path. Each engine attempt writes inside a unique hidden staging folder under the selected output directory, so its temporary files stay on the destination volume and are removed after success, failure or cancellation. Successful conversions validate before the final move. Collisions receive a numeric suffix rather than replacing a file.
 
 ## Finder integration
 

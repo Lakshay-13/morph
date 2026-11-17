@@ -3,7 +3,7 @@
 # Gatekeeper, Homebrew audit, install and uninstall checks.
 cask "morph" do
   version "0.1.0"
-  sha256 "ed645d5796afed22590a0a1313e6cbaa0aaa6bd03188bf3ccdf470ef26c67e00"
+  sha256 "c5d14d32afb526ad093740f04672d02ca2c0214527f1b6f6130d76b5d80a1fbe"
 
   url "https://github.com/Lakshay-13/morph/releases/download/v#{version}/Morph-#{version}-macOS-universal.zip"
   name "Morph"
