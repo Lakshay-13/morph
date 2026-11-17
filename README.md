@@ -30,8 +30,8 @@ Morph shows a conversion only when the detected input capability, output capabil
 |---|---|
 | Images | Apple ImageIO formats available on this macOS install; optional ImageMagick routes when detected. Image resizing writes JPEG. |
 | Audio and video | FFmpeg routes based on this installed FFmpeg build's input demuxers, output muxers and required encoders. Includes audio extraction where a source has an audio stream. |
-| Documents | Pandoc routes for detected reader/writer formats; LibreOffice routes for detected office formats. PDF text extraction uses Poppler. |
-| Spreadsheets and data | LibreOffice office spreadsheet routes; Morph's local JSON ↔ CSV, JSON ↔ XML and CSV ↔ TSV transformations. |
+| Documents | Pandoc routes for detected reader/writer formats; LibreOffice converts within text-document or presentation families and exports those files to PDF. PDF text extraction uses Poppler. |
+| Spreadsheets and data | LibreOffice converts within spreadsheet formats and exports them to PDF; Morph provides local JSON ↔ CSV, JSON ↔ XML and CSV ↔ TSV transformations. |
 | Archives | ZIP ↔ TAR.GZ repackaging and ZIP extraction. Archive paths are checked before extraction and extracted links are checked for escapes. |
 | PDF operations | Image-to-PDF, merge selected PDFs and split a PDF into one-page files, using PDFKit. |
 

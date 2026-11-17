@@ -14,6 +14,8 @@ Morph's format graph is in `Sources/MorphCore/EngineRegistry.swift`; models and 
 
 Multi-part extensions such as `.tar.gz` are recognized by `URL.morphExtension(knownExtensions:)`, which tries longer registered suffixes first.
 
+LibreOffice routes are constrained to text-document, presentation or spreadsheet families, with PDF export from each family. Do not generate a Cartesian product across all office extensions: a file extension alone does not make cross-family conversions meaningful or supported.
+
 ## Add an engine
 
 1. Add an `EngineID` case, display name, Homebrew formula (if appropriate), executable candidates and plain-language summary in `Models.swift`.

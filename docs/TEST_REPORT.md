@@ -5,7 +5,7 @@
 **Run date:** 2026-11-17
 
 **Command:** `Scripts/run-checks.sh` with SwiftPM using the installed Command Line Tools
-**Result:** 12 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs were executed with real generated files.
+**Result:** 13 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs were executed with real generated files.
 
 The harness checks that each conversion output exists and is non-empty, runs `OutputValidator`, verifies the generated content or media properties where practical, and checks SHA-256 of the original file before and after conversion. Fixtures are generated locally; no network service is used for conversion.
 
@@ -45,6 +45,7 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 |---|---|
 | Image resize to 50% | Passed; a 160 × 80 PNG produced an 80 × 40 JPEG, source checksum unchanged. |
 | PDF merge and split | Passed; two one-page PDFs merged to two pages and split back into two one-page PDFs. Input checksums unchanged. |
+| LibreOffice route family constraints | Passed; DOCX, PPTX and XLSX each expose PDF export, while document ↔ spreadsheet and presentation → spreadsheet routes are not advertised. |
 | ZIP extraction | Passed; extracted file content matched, ZIP checksum unchanged. |
 | Invalid image input | Passed; conversion failed, original remained unchanged, no partial output remained. |
 | Missing FFmpeg route | Passed; reported the missing engine before creating an output directory. |

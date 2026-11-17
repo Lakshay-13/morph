@@ -28,6 +28,7 @@ final class MorphCheckSuite {
         test("native images and PDF") { try checkImagesAndPDF($0) }
         test("audio and video with FFmpeg") { try checkAudioVideo($0) }
         test("documents and PDF text") { try checkDocuments($0) }
+        test("LibreOffice routes stay within compatible format families") { _ in try checkLibreOfficeRoutes() }
         test("structured data") { try checkStructuredData($0) }
         test("archive repackaging") { try checkArchives($0) }
         test("image resize, PDF pages, and ZIP extraction") { try checkFileOperations($0) }
@@ -162,6 +163,23 @@ final class MorphCheckSuite {
             try expect(restoredText.contains("Apples") && restoredText.contains("Oranges"), "Spreadsheet round trip lost cell text")
             try expect(try sha256(csv) == csvHash, "CSV source changed during spreadsheet conversion")
         }
+    }
+
+    private func checkLibreOfficeRoutes() throws {
+        guard registry.status(for: .libreOffice)?.isInstalled == true else {
+            throw CheckSkip("LibreOffice is not installed")
+        }
+        let officeRoutes = registry.routes.filter { $0.engine == .libreOffice }
+        func supports(_ input: String, _ output: String) -> Bool {
+            officeRoutes.contains { $0.inputExtension == input && $0.output.fileExtension == output }
+        }
+
+        try expect(supports("docx", "pdf"), "LibreOffice should expose DOCX to PDF")
+        try expect(supports("pptx", "pdf"), "LibreOffice should expose PPTX to PDF")
+        try expect(supports("xlsx", "pdf"), "LibreOffice should expose XLSX to PDF")
+        try expect(!supports("docx", "xlsx"), "LibreOffice must not advertise document-to-spreadsheet conversion")
+        try expect(!supports("pptx", "xlsx"), "LibreOffice must not advertise presentation-to-spreadsheet conversion")
+        try expect(!supports("xlsx", "docx"), "LibreOffice must not advertise spreadsheet-to-document conversion")
     }
 
     private func checkStructuredData(_ folder: URL) throws {

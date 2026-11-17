@@ -244,9 +244,22 @@ private enum PandocCapabilities {
 }
 
 private enum OfficeCapabilities {
+    private static let textDocuments: Set<String> = ["doc", "docx", "odt", "rtf", "txt", "html"]
+    private static let presentations: Set<String> = ["ppt", "pptx", "odp"]
+    private static let spreadsheets: Set<String> = ["xls", "xlsx", "ods", "csv"]
+
+    static func outputs(for input: String) -> Set<String>? {
+        if textDocuments.contains(input) { return textDocuments.union(["pdf"]) }
+        if presentations.contains(input) { return presentations.union(["pdf"]) }
+        if spreadsheets.contains(input) { return spreadsheets.union(["pdf"]) }
+        return nil
+    }
+
     static func probe(_ executable: URL) -> (inputs: Set<String>, outputs: Set<String>) {
         guard let result = try? ProcessRunner.run(executable: executable, arguments: ["--headless", "--version"]), result.status == 0 else { return ([], []) }
-        return (["doc", "docx", "odt", "rtf", "ppt", "pptx", "odp", "xls", "xlsx", "ods", "csv"], ["pdf", "docx", "odt", "rtf", "pptx", "odp", "xlsx", "ods", "csv", "html", "txt"])
+        let inputs = textDocuments.union(presentations).union(spreadsheets)
+        let outputs = inputs.union(["pdf"])
+        return (inputs, outputs)
     }
 }
 
@@ -332,10 +345,10 @@ private enum ConversionCatalog {
         }
 
         if let office = statuses[.libreOffice], office.isInstalled {
-            let officeFormats = formats.filter { $0.category == .document || $0.category == .spreadsheet }
             for source in office.supportedInputExtensions {
-                for format in officeFormats where source != format.fileExtension && office.supportedOutputExtensions.contains(format.fileExtension) {
-                    result.append(ConversionRoute(inputExtension: source, output: format, engine: .libreOffice, description: "Convert using LibreOffice"))
+                guard let compatibleOutputs = OfficeCapabilities.outputs(for: source) else { continue }
+                for output in compatibleOutputs where source != output && office.supportedOutputExtensions.contains(output) {
+                    add(source, output, .libreOffice, "Convert using LibreOffice")
                 }
             }
         }
