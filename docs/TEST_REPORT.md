@@ -50,7 +50,7 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | Cancellation | Passed; cancelled child process stopped within the 3-second test limit. |
 | Large image | Passed; converted a locally generated 2048 × 2048 noisy PNG larger than 12 MB and kept the source unchanged. |
 | Conversion staging cleanup | Passed; no `.morph-*.staging` directory or `.partial` file remained after PNG → ICO or after failed/fallback engine attempts. |
-| Installed Finder handoff and app UI | Passed with the installed Quick Action workflow script and a real PNG fixture; Morph imported the file, consumed the temporary manifest and the UI completed PNG → ICO. ImageMagick validated the output and the source SHA-256 remained unchanged. The context-menu listing was previously observed; a direct click from Finder after the final handoff update was not re-run. |
+| Installed Finder handoff and app UI | Passed; macOS `automator -v -i <fixture> <installed-workflow>` executed the installed Quick Action, Morph imported the PNG and consumed the temporary manifest, and the UI completed PNG → ICO. ImageMagick validated the output and the source SHA-256 remained unchanged. The context-menu listing was previously observed; a direct click from Finder after the final handoff update was not re-run. |
 | Dependency consent alert | Not verified in the live UI; no package action was confirmed or run during this test. |
 
 ## Limitations of this run
