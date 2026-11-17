@@ -93,5 +93,14 @@ jobs:
           archs="$(lipo -archs "$app/Contents/MacOS/Morph")"
           [[ "$archs" == *arm64* && "$archs" == *x86_64* ]]
           codesign --verify --deep --strict "$app"
+          test -s "$app/Contents/Resources/Legal/LICENSE"
+          test -s "$app/Contents/Resources/Legal/THIRD_PARTY.md"
+          test -s "$app/Contents/Resources/Legal/THIRD_PARTY_LICENSES/Yams-MIT.txt"
+          test -s "$app/Contents/Resources/Legal/THIRD_PARTY_LICENSES/LibYAML-MIT.txt"
+          test -s "$app/Contents/Resources/Legal/THIRD_PARTY_LICENSES/Swift-TOML-MIT.txt"
+          test -s "$app/Contents/Resources/Legal/THIRD_PARTY_LICENSES/toml++-MIT.txt"
+          unzip -Z1 "$archive" | grep -Fxq 'Morph-0.1.0/LICENSE'
+          unzip -Z1 "$archive" | grep -Fxq 'Morph-0.1.0/THIRD_PARTY_LICENSES/LibYAML-MIT.txt'
+          if unzip -Z1 "$archive" | grep -Eq '(^|/)\._'; then exit 1; fi
           unzip -tq "$archive"
           shasum -a 256 -c "$archive.sha256"

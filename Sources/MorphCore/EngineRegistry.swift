@@ -25,8 +25,8 @@ public struct EngineRegistry: Sendable {
             .nativePDF: EngineStatus(id: .nativePDF),
             .structuredData: EngineStatus(
                 id: .structuredData,
-                supportedInputExtensions: ["json", "csv", "tsv", "xml"],
-                supportedOutputExtensions: ["json", "csv", "tsv", "xml"]
+                supportedInputExtensions: ["json", "csv", "tsv", "xml", "yaml", "yml", "toml"],
+                supportedOutputExtensions: ["json", "csv", "tsv", "xml", "yaml", "yml", "toml"]
             ),
             .archive: EngineStatus(
                 id: .archive,
@@ -281,7 +281,7 @@ private enum ConversionCatalog {
         MorphFormat("pptx", "PowerPoint", .document), MorphFormat("ppt", "PowerPoint 97–2003", .document), MorphFormat("odp", "OpenDocument presentation", .document),
         MorphFormat("xlsx", "Excel workbook", .spreadsheet), MorphFormat("xls", "Excel 97–2003", .spreadsheet),
         MorphFormat("csv", "CSV", .spreadsheet), MorphFormat("tsv", "TSV", .spreadsheet), MorphFormat("ods", "OpenDocument spreadsheet", .spreadsheet),
-        MorphFormat("json", "JSON", .spreadsheet), MorphFormat("xml", "XML", .spreadsheet), MorphFormat("yaml", "YAML", .spreadsheet), MorphFormat("toml", "TOML", .spreadsheet),
+        MorphFormat("json", "JSON", .spreadsheet), MorphFormat("xml", "XML", .spreadsheet), MorphFormat("yaml", "YAML", .spreadsheet), MorphFormat("yml", "YAML", .spreadsheet), MorphFormat("toml", "TOML", .spreadsheet),
         MorphFormat("zip", "ZIP archive", .archive), MorphFormat("7z", "7-Zip archive", .archive), MorphFormat("tar.gz", "GZIP TAR archive", .archive),
         MorphFormat("gz", "GZIP", .archive), MorphFormat("bz2", "BZIP2", .archive), MorphFormat("xz", "XZ", .archive), MorphFormat("rar", "RAR archive", .archive),
     ]
@@ -353,8 +353,16 @@ private enum ConversionCatalog {
             }
         }
 
-        let structuredPairs = [("json", "csv"), ("csv", "json"), ("json", "xml"), ("xml", "json"), ("csv", "tsv"), ("tsv", "csv")]
-        for (source, output) in structuredPairs { add(source, output, .structuredData, "Convert structured data locally") }
+        let structuredFormats = ["json", "yaml", "yml", "toml", "csv", "tsv"]
+        for source in structuredFormats {
+            for output in structuredFormats where source != output {
+                add(source, output, .structuredData, "Convert structured data locally")
+            }
+        }
+        for format in ["json", "yaml", "yml", "toml"] {
+            add(format, "xml", .structuredData, "Convert structured data locally")
+            add("xml", format, .structuredData, "Convert structured data locally")
+        }
 
         if statuses[.archive]?.isInstalled == true {
             add("zip", "tar.gz", .archive, "Repackage with built-in macOS archive tools")

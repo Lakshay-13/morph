@@ -33,6 +33,7 @@ final class MorphCheckSuite {
         test("LibreOffice routes stay within compatible format families") { _ in try checkLibreOfficeRoutes() }
         test("PDF compression with Ghostscript") { try checkPDFCompression($0) }
         test("structured data") { try checkStructuredData($0) }
+        test("YAML and TOML transformations") { try checkYAMLAndTOML($0) }
         test("archive repackaging") { try checkArchives($0) }
         test("archive traversal and symlink rejection") { try checkArchiveTraversal($0) }
         test("image resize, PDF pages, and ZIP extraction") { try checkFileOperations($0) }
@@ -279,6 +280,62 @@ final class MorphCheckSuite {
         let tsv = try convert(csv2, to: "tsv", category: .spreadsheet, output: output)
         let csvAgain = try convert(tsv, to: "csv", category: .spreadsheet, output: output)
         try expect(try String(contentsOf: csvAgain, encoding: .utf8).contains("Grace,3"), "TSV round trip lost the row")
+    }
+
+    private func checkYAMLAndTOML(_ folder: URL) throws {
+        let output = folder.appendingPathComponent("output", isDirectory: true)
+        let json = folder.appendingPathComponent("config.json")
+        let jsonText = """
+        {"name":"Ada Lovelace","active":true,"count":42,"note":"on","labels":["Math","Computing"],"settings":{"enabled":false}}
+        """
+        try jsonText.write(to: json, atomically: true, encoding: .utf8)
+        let jsonHash = try sha256(json)
+
+        let yaml = try convert(json, to: "yaml", category: .spreadsheet, output: output)
+        let yamlText = try String(contentsOf: yaml, encoding: .utf8)
+        try expect(!yamlText.isEmpty, "JSON-to-YAML produced empty output")
+        let restoredJSON = try convert(yaml, to: "json", category: .spreadsheet, output: output)
+        let restored = try JSONSerialization.jsonObject(with: Data(contentsOf: restoredJSON)) as? [String: Any]
+        try expect(restored?["name"] as? String == "Ada Lovelace", "YAML-to-JSON lost the name")
+        try expect(restored?["active"] as? Bool == true, "YAML-to-JSON changed a boolean")
+        try expect(restored?["note"] as? String == "on", "YAML 1.2 parsing changed the string 'on' into a boolean")
+
+        let toml = try convert(json, to: "toml", category: .spreadsheet, output: output)
+        let tomlText = try String(contentsOf: toml, encoding: .utf8)
+        try expect(tomlText.contains("Ada Lovelace") && tomlText.contains("active"), "JSON-to-TOML lost expected values")
+        let restoredFromTOML = try convert(toml, to: "json", category: .spreadsheet, output: output)
+        let tomlJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: restoredFromTOML)) as? [String: Any]
+        try expect(tomlJSON?["name"] as? String == "Ada Lovelace", "TOML-to-JSON lost the name")
+        try expect(tomlJSON?["active"] as? Bool == true, "TOML-to-JSON changed a boolean")
+        try expect(tomlJSON?["note"] as? String == "on", "TOML-to-JSON changed a string")
+
+        let fixtureYAML = folder.appendingPathComponent("yaml-core.yaml")
+        try "active: true\nlegacyWord: on\nbareDate: 2024-01-02\ncount: 42\n".write(to: fixtureYAML, atomically: true, encoding: .utf8)
+        let yamlHash = try sha256(fixtureYAML)
+        let yamlJSONURL = try convert(fixtureYAML, to: "json", category: .spreadsheet, output: output)
+        let yamlJSON = try JSONSerialization.jsonObject(with: Data(contentsOf: yamlJSONURL)) as? [String: Any]
+        try expect(yamlJSON?["active"] as? Bool == true, "YAML boolean was not parsed")
+        try expect(yamlJSON?["legacyWord"] as? String == "on", "YAML 1.2 string semantics changed 'on'")
+        try expect(yamlJSON?["bareDate"] as? String == "2024-01-02", "A bare YAML date should remain a string")
+        try expect(yamlJSON?["count"] as? Int == 42, "YAML integer was not parsed")
+
+        let yamlToml = try convert(fixtureYAML, to: "toml", category: .spreadsheet, output: output)
+        let tomlYAML = try convert(yamlToml, to: "yml", category: .spreadsheet, output: output)
+        let yamlRoundTripJSON = try convert(tomlYAML, to: "json", category: .spreadsheet, output: output)
+        let roundTrip = try JSONSerialization.jsonObject(with: Data(contentsOf: yamlRoundTripJSON)) as? [String: Any]
+        try expect(roundTrip?["legacyWord"] as? String == "on", "YAML → TOML → YAML changed the string 'on'")
+        try expect(try sha256(json) == jsonHash, "Structured-data conversions changed the JSON source")
+        try expect(try sha256(fixtureYAML) == yamlHash, "Structured-data conversions changed the YAML source")
+
+        let multipleDocuments = folder.appendingPathComponent("multi.yaml")
+        try "first: 1\n---\nsecond: 2\n".write(to: multipleDocuments, atomically: true, encoding: .utf8)
+        let rejectedOutput = folder.appendingPathComponent("rejected.json")
+        do {
+            try StructuredDataEngine.convert(input: multipleDocuments, output: rejectedOutput)
+            throw CheckFailure("Multi-document YAML should be rejected")
+        } catch MorphError.invalidInput {
+            try expect(!FileManager.default.fileExists(atPath: rejectedOutput.path), "Rejected YAML left a partial output")
+        }
     }
 
     private func checkPDFCompression(_ folder: URL) throws {

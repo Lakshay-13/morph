@@ -14,6 +14,8 @@ Morph's format graph is in `Sources/MorphCore/EngineRegistry.swift`; models and 
 
 Multi-part extensions such as `.tar.gz` are recognized by `URL.morphExtension(knownExtensions:)`, which tries longer registered suffixes first.
 
+Structured-data routes are implemented by `StructuredDataEngine`. JSON/YAML/TOML objects can convert between those formats; CSV and TSV require arrays of string-keyed records, and TOML represents a top-level record array under `records`. XML bridges JSON, YAML and TOML. Keep parsing limits and generated-output validation in place when adding structured formats. Parser package versions and licenses are recorded in `Package.swift`, `Package.resolved` and `docs/THIRD_PARTY.md`.
+
 LibreOffice routes are constrained to text-document, presentation or spreadsheet families, with PDF export from each family. Do not generate a Cartesian product across all office extensions: a file extension alone does not make cross-family conversions meaningful or supported.
 
 ## Add an engine

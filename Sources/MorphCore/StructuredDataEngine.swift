@@ -1,84 +1,277 @@
+import CoreFoundation
+import Darwin
 import Foundation
+import TOML
+import Yams
 
 public enum StructuredDataEngine {
+    private static let maximumStructuredInputBytes = 10 * 1024 * 1024
+    private static let maximumNestedDepth = 128
+    private static let maximumTableKeys = 10_000
+    private static let maximumArrayLength = 100_000
+
     public static func convert(input: URL, output: URL) throws {
         let sourceExtension = input.pathExtension.lowercased()
         let targetExtension = output.pathExtension.lowercased()
-        let text: String
-        do { text = try String(contentsOf: input, encoding: .utf8) }
-        catch { throw MorphError.invalidInput("The file is not readable UTF-8 text.") }
-
-        let converted: Data
-        switch (sourceExtension, targetExtension) {
-        case ("json", "csv"):
-            let value = try JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
-            let rows = try records(from: value)
-            converted = Data(serializeCSV(rows).utf8)
-        case ("csv", "json"), ("tsv", "json"):
-            let delimiter: Character = sourceExtension == "tsv" ? "\t" : ","
-            let rows = try parseDelimited(text, delimiter: delimiter)
-            converted = try JSONSerialization.data(withJSONObject: records(from: rows), options: [.prettyPrinted, .sortedKeys])
-        case ("json", "xml"):
-            let value = try JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
-            let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + element(name: "root", value: value) + "\n"
-            converted = Data(xml.utf8)
-        case ("xml", "json"):
-            guard let data = text.data(using: .utf8) else { throw MorphError.invalidInput("The XML text is not valid UTF-8.") }
-            let parser = XMLTreeParser()
-            let xmlParser = XMLParser(data: data)
-            xmlParser.shouldResolveExternalEntities = false
-            xmlParser.delegate = parser
-            guard xmlParser.parse(), let root = parser.root else { throw MorphError.invalidInput("The XML document is malformed.") }
-            converted = try JSONSerialization.data(withJSONObject: root.objectValue, options: [.prettyPrinted, .sortedKeys, .fragmentsAllowed])
-        case ("csv", "tsv"), ("tsv", "csv"):
-            let sourceDelimiter: Character = sourceExtension == "tsv" ? "\t" : ","
-            let targetDelimiter: Character = targetExtension == "tsv" ? "\t" : ","
-            let rows = try parseDelimited(text, delimiter: sourceDelimiter)
-            converted = Data(serializeDelimited(rows, delimiter: targetDelimiter).utf8)
-        default:
+        let supportedExtensions: Set<String> = ["json", "csv", "tsv", "xml", "yaml", "yml", "toml"]
+        guard supportedExtensions.contains(sourceExtension), supportedExtensions.contains(targetExtension) else {
             throw MorphError.unsupportedConversion(sourceExtension, targetExtension)
         }
+
+        let text = try readText(input, extension: sourceExtension)
+        let value = try decode(inputText: text, extension: sourceExtension)
+        let converted = try encode(value, sourceExtension: sourceExtension, targetExtension: targetExtension)
 
         do { try converted.write(to: output, options: .atomic) }
         catch { throw MorphError.processFailed("Could not write the converted data: \(error.localizedDescription)") }
     }
 
-    private static func records(from value: Any) throws -> [[String: Any]] {
-        guard let array = value as? [Any],
-              array.allSatisfy({ $0 is [String: Any] }) else {
-            throw MorphError.invalidInput("CSV conversion requires a JSON array of objects.")
+    public static func validateGeneratedOutput(_ url: URL, extension fileExtension: String) throws {
+        do {
+            let text = try readText(url, extension: fileExtension)
+            _ = try decode(inputText: text, extension: fileExtension)
+        } catch {
+            throw MorphError.invalidOutput("The generated \(fileExtension.uppercased()) is not valid: \(error.localizedDescription)")
         }
-        return array.compactMap { $0 as? [String: Any] }
     }
 
-    private static func records(from rows: [[String]]) throws -> [[String: String]] {
+    private static func readText(_ input: URL, extension fileExtension: String) throws -> String {
+        if ["yaml", "yml", "toml"].contains(fileExtension) {
+            let size = try fileSizeAtPath(input)
+            guard size <= Int64(maximumStructuredInputBytes) else {
+                throw MorphError.invalidInput("YAML and TOML inputs must be 10 MB or smaller.")
+            }
+        }
+
+        do {
+            let text = try String(contentsOf: input, encoding: .utf8)
+            if ["yaml", "yml", "toml"].contains(fileExtension), text.utf8.count > maximumStructuredInputBytes {
+                throw MorphError.invalidInput("YAML and TOML inputs must be 10 MB or smaller.")
+            }
+            return text
+        } catch let error as MorphError {
+            throw error
+        } catch {
+            throw MorphError.invalidInput("The file is not readable UTF-8 text.")
+        }
+    }
+
+    private static func fileSizeAtPath(_ input: URL) throws -> Int64 {
+        let resolvedURL = input.resolvingSymlinksInPath()
+        var fileInfo = stat()
+        let result = resolvedURL.withUnsafeFileSystemRepresentation { path -> Int32 in
+            guard let path else { return -1 }
+            return lstat(path, &fileInfo)
+        }
+        guard result == 0,
+              fileInfo.st_size >= 0,
+              fileInfo.st_mode & S_IFMT == S_IFREG else {
+            throw MorphError.invalidInput("The structured-data input must be a readable regular file.")
+        }
+        return Int64(fileInfo.st_size)
+    }
+
+    private static func decode(inputText text: String, extension fileExtension: String) throws -> DynamicJSONValue {
+        do {
+            switch fileExtension {
+            case "json":
+                try validateJSONDepth(text)
+                return try JSONDecoder().decode(DynamicJSONValue.self, from: Data(text.utf8))
+            case "yaml", "yml":
+                return try decodeYAML(text)
+            case "toml":
+                let decoder = TOMLDecoder()
+                decoder.limits = .init(
+                    maxInputSize: maximumStructuredInputBytes,
+                    maxDepth: maximumNestedDepth,
+                    maxTableKeys: maximumTableKeys,
+                    maxArrayLength: maximumArrayLength,
+                    maxStringLength: 1024 * 1024
+                )
+                return try decoder.decode(DynamicJSONValue.self, from: text)
+            case "csv", "tsv":
+                let delimiter: Character = fileExtension == "tsv" ? "\t" : ","
+                let rows = try parseDelimited(text, delimiter: delimiter)
+                return try records(from: rows)
+            case "xml":
+                return try decodeXML(text)
+            default:
+                throw MorphError.unsupportedConversion(fileExtension, "structured data")
+            }
+        } catch let error as MorphError {
+            throw error
+        } catch {
+            throw MorphError.invalidInput("Could not parse the \(fileExtension.uppercased()) input: \(error.localizedDescription)")
+        }
+    }
+
+    private static func validateJSONDepth(_ text: String) throws {
+        var depth = 0
+        var inString = false
+        var escaped = false
+
+        for byte in text.utf8 {
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if byte == 0x5C {
+                    escaped = true
+                } else if byte == 0x22 {
+                    inString = false
+                }
+                continue
+            }
+
+            if byte == 0x22 {
+                inString = true
+            } else if byte == 0x7B || byte == 0x5B {
+                depth += 1
+                guard depth <= maximumNestedDepth else {
+                    throw MorphError.invalidInput("JSON inputs may not be nested more than 128 levels.")
+                }
+            } else if byte == 0x7D || byte == 0x5D {
+                depth -= 1
+                if depth < 0 { return }
+            }
+        }
+    }
+
+    private static func encode(
+        _ value: DynamicJSONValue,
+        sourceExtension: String,
+        targetExtension: String
+    ) throws -> Data {
+        do {
+            switch targetExtension {
+            case "json":
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                return try encoder.encode(value)
+            case "yaml", "yml":
+                return Data(try YAMLEncoder().encode(value).utf8)
+            case "toml":
+                let root = try tomlRoot(value)
+                try validateTOMLValue(root)
+                let encoder = TOMLEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let text = try encoder.encodeToString(root)
+                return Data((text.isEmpty ? "# Empty TOML table\n" : text).utf8)
+            case "csv", "tsv":
+                let rows = try records(from: value)
+                let delimiter: Character = targetExtension == "tsv" ? "\t" : ","
+                let header = Array(Set(rows.flatMap(\.keys))).sorted()
+                guard !header.isEmpty else {
+                    throw MorphError.invalidInput("Delimited output requires at least one record field.")
+                }
+                var delimitedRows = [header]
+                delimitedRows.append(contentsOf: rows.map { row in
+                    header.map { scalarString(row[$0]?.foundationValue ?? NSNull()) }
+                })
+                return Data(serializeDelimited(delimitedRows, delimiter: delimiter).utf8)
+            case "xml":
+                let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + element(name: "root", value: value.foundationValue) + "\n"
+                return Data(xml.utf8)
+            default:
+                throw MorphError.unsupportedConversion(sourceExtension, targetExtension)
+            }
+        } catch let error as MorphError {
+            throw error
+        } catch {
+            throw MorphError.invalidOutput("Could not encode \(targetExtension.uppercased()) output: \(error.localizedDescription)")
+        }
+    }
+
+    private static func decodeYAML(_ text: String) throws -> DynamicJSONValue {
+        var documents = try Yams.load_all(yaml: text, yaml12Resolver)
+        guard let document = documents.next() else {
+            throw MorphError.invalidInput("The YAML document is empty or malformed: \(documents.error?.localizedDescription ?? "no document found")")
+        }
+        if let error = documents.error {
+            throw MorphError.invalidInput("The YAML document is malformed: \(error.localizedDescription)")
+        }
+        guard documents.next() == nil else {
+            throw MorphError.invalidInput("Multi-document YAML files are not supported; convert one document at a time.")
+        }
+        if let error = documents.error {
+            throw MorphError.invalidInput("The YAML document is malformed: \(error.localizedDescription)")
+        }
+        return try DynamicJSONValue.fromFoundation(document, depth: 0)
+    }
+
+    private static let yaml12Resolver: Resolver = {
+        let nullPattern = "^(?:~|null|Null|NULL|)$"
+        let boolPattern = "^(?:true|True|TRUE|false|False|FALSE)$"
+        let intPattern = "^[-+]?(?:0|[1-9][0-9_]*|0x[0-9a-fA-F_]+|0o[0-7_]+|0b[0-1_]+)$"
+        let floatPattern = "^(?:[-+]?(?:(?:[0-9][0-9_]*)?\\.[0-9_]+|[0-9][0-9_]*\\.)(?:[eE][-+]?[0-9]+)?|[-+]?[0-9][0-9_]*[eE][-+]?[0-9]+|[-+]?(?:\\.inf|\\.Inf|\\.INF|\\.nan|\\.NaN|\\.NAN))$"
+        return try! Resolver.basic
+            .appending(.null, nullPattern)
+            .appending(.bool, boolPattern)
+            .appending(.int, intPattern)
+            .appending(.float, floatPattern)
+    }()
+
+    private static func decodeXML(_ text: String) throws -> DynamicJSONValue {
+        guard let data = text.data(using: .utf8) else {
+            throw MorphError.invalidInput("The XML text is not valid UTF-8.")
+        }
+        let parser = XMLTreeParser()
+        let xmlParser = XMLParser(data: data)
+        xmlParser.shouldResolveExternalEntities = false
+        xmlParser.delegate = parser
+        guard xmlParser.parse(), let root = parser.root else {
+            throw MorphError.invalidInput("The XML document is malformed.")
+        }
+        return try DynamicJSONValue.fromFoundation(root.objectValue, depth: 0)
+    }
+
+    private static func tomlRoot(_ value: DynamicJSONValue) throws -> DynamicJSONValue {
+        switch value {
+        case .object:
+            return value
+        case .array:
+            return .object(["records": value])
+        default:
+            throw MorphError.invalidInput("TOML requires a top-level table. Convert a JSON or YAML object, or an array of records.")
+        }
+    }
+
+    private static func validateTOMLValue(_ value: DynamicJSONValue) throws {
+        switch value {
+        case .unsigned(let number) where number > UInt64(Int64.max):
+            throw MorphError.invalidInput("TOML integers must fit in the signed 64-bit range.")
+        case .object(let values):
+            for value in values.values { try validateTOMLValue(value) }
+        case .array(let values):
+            for value in values { try validateTOMLValue(value) }
+        default:
+            break
+        }
+    }
+
+    private static func records(from value: DynamicJSONValue) throws -> [[String: DynamicJSONValue]] {
+        let candidate: DynamicJSONValue
+        if case .object(let object) = value, let records = object["records"] {
+            candidate = records
+        } else {
+            candidate = value
+        }
+        guard case .array(let array) = candidate,
+              array.allSatisfy({ if case .object = $0 { return true }; return false }) else {
+            throw MorphError.invalidInput("CSV or TSV conversion requires an array of objects. TOML inputs should place rows in a top-level 'records' array.")
+        }
+        return array.compactMap { if case .object(let row) = $0 { return row }; return nil }
+    }
+
+    private static func records(from rows: [[String]]) throws -> DynamicJSONValue {
         guard let header = rows.first, !header.isEmpty else { throw MorphError.invalidInput("The delimited file has no header row.") }
         let names = header.enumerated().map { index, name in name.isEmpty ? "column_\(index + 1)" : name }
         guard Set(names).count == names.count else { throw MorphError.invalidInput("The header row contains duplicate column names.") }
-        return rows.dropFirst().filter { !$0.allSatisfy(\.isEmpty) }.map { row in
-            Dictionary(uniqueKeysWithValues: names.enumerated().map { index, name in
-                (name, index < row.count ? row[index] : "")
-            })
+        let records = rows.dropFirst().filter { !$0.allSatisfy(\.isEmpty) }.map { row in
+            DynamicJSONValue.object(Dictionary(uniqueKeysWithValues: names.enumerated().map { index, name in
+                (name, .string(index < row.count ? row[index] : ""))
+            }))
         }
-    }
-
-    private static func serializeCSV(_ rows: [[String: Any]]) -> String {
-        let headers = Array(Set(rows.flatMap(\.keys))).sorted()
-        guard !headers.isEmpty else { return "" }
-        var lines = [serializeDelimitedRow(headers, delimiter: ",")]
-        for row in rows {
-            lines.append(serializeDelimitedRow(headers.map { scalarString(row[$0] ?? NSNull()) }, delimiter: ","))
-        }
-        return lines.joined(separator: "\n") + "\n"
-    }
-
-    private static func scalarString(_ value: Any) -> String {
-        if value is NSNull { return "" }
-        if let string = value as? String { return string }
-        if JSONSerialization.isValidJSONObject(value),
-           let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
-           let nested = String(data: data, encoding: .utf8) { return nested }
-        return String(describing: value)
+        return .array(records)
     }
 
     private static func parseDelimited(_ text: String, delimiter: Character) throws -> [[String]] {
@@ -126,8 +319,13 @@ public enum StructuredDataEngine {
         return rows
     }
 
-    private static func serializeCSV(_ rows: [[String]]) -> String {
-        serializeDelimited(rows, delimiter: ",")
+    private static func scalarString(_ value: Any) -> String {
+        if value is NSNull { return "" }
+        if let string = value as? String { return string }
+        if JSONSerialization.isValidJSONObject(value),
+           let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+           let nested = String(data: data, encoding: .utf8) { return nested }
+        return String(describing: value)
     }
 
     private static func serializeDelimited(_ rows: [[String]], delimiter: Character) -> String {

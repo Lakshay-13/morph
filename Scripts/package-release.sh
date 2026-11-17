@@ -27,7 +27,10 @@ mkdir -p "$STAGE"
 trap 'rm -r "$STAGE"' EXIT
 ditto "$DIST_ROOT/Morph.app" "$STAGE/Morph.app"
 ditto "$REPO_ROOT/Resources/QuickActions/Convert with Morph.workflow" "$STAGE/Convert with Morph.workflow"
-ditto -c -k --keepParent "$STAGE" "$ARCHIVE"
+cp "$REPO_ROOT/LICENSE" "$STAGE/LICENSE"
+cp "$REPO_ROOT/docs/THIRD_PARTY.md" "$STAGE/THIRD_PARTY.md"
+ditto "$REPO_ROOT/THIRD_PARTY_LICENSES" "$STAGE/THIRD_PARTY_LICENSES"
+ditto -c -k --norsrc --keepParent "$STAGE" "$ARCHIVE"
 if [[ -n "${MORPH_CODESIGN_IDENTITY:-}" && -n "${MORPH_NOTARY_PROFILE:-}" ]]; then
   xcrun notarytool submit "$ARCHIVE" --keychain-profile "$MORPH_NOTARY_PROFILE" --wait
   xcrun stapler staple "$STAGE/Morph.app"
@@ -35,7 +38,7 @@ if [[ -n "${MORPH_CODESIGN_IDENTITY:-}" && -n "${MORPH_NOTARY_PROFILE:-}" ]]; th
   codesign --verify --deep --strict --verbose=2 "$STAGE/Morph.app"
   spctl --assess --type execute --verbose=2 "$STAGE/Morph.app"
   rm "$ARCHIVE"
-  ditto -c -k --keepParent "$STAGE" "$ARCHIVE"
+  ditto -c -k --norsrc --keepParent "$STAGE" "$ARCHIVE"
 elif [[ -z "${MORPH_CODESIGN_IDENTITY:-}" ]]; then
   printf 'No Developer ID identity supplied; this archive is ad-hoc signed and is not eligible for public distribution.\n' >&2
 else

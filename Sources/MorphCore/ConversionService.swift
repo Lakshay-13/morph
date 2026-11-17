@@ -416,6 +416,8 @@ public enum OutputValidator {
             parser.shouldResolveExternalEntities = false
             parser.delegate = checker
             guard parser.parse() else { throw MorphError.invalidOutput("The generated XML is not valid.") }
+        case .spreadsheet where ["yaml", "yml", "toml"].contains(format.fileExtension):
+            try StructuredDataEngine.validateGeneratedOutput(url, extension: format.fileExtension)
         case .archive:
             try validateArchive(url, format: format)
         case .audio, .video:

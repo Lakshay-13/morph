@@ -5,7 +5,7 @@
 **Run date:** 2026-11-18
 
 **Command:** `Scripts/run-checks.sh` with SwiftPM using the selected Xcode 27 toolchain
-**Result:** 20 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs, PDF page-range extraction, PDF compression, video trimming and batch rename copies were executed with real generated files.
+**Result:** 21 automated groups passed, 0 failed, 0 skipped. Thirty-one distinct input/output format pairs, PDF page-range extraction, PDF compression, video trimming and batch rename copies were executed with real generated files.
 
 The harness checks that each conversion output exists and is non-empty, runs `OutputValidator`, verifies the generated content or media properties where practical, and checks SHA-256 of the original file before and after conversion. Fixtures are generated locally; no network service is used for conversion.
 
@@ -34,6 +34,13 @@ The harness checks that each conversion output exists and is non-empty, runs `Ou
 | XML → JSON | Morph structured-data engine | Passed; JSON parser accepted output. |
 | CSV → TSV | Morph structured-data engine | Passed; conversion round-tripped. |
 | TSV → CSV | Morph structured-data engine | Passed; row content preserved. |
+| JSON → YAML | Morph structured-data engine | Passed; generated YAML reparsed and expected values were preserved. |
+| YAML → JSON | Morph structured-data engine | Passed; YAML 1.2 boolean/string semantics and expected values were preserved. |
+| JSON → TOML | Morph structured-data engine | Passed; generated TOML reparsed and expected values were preserved. |
+| TOML → JSON | Morph structured-data engine | Passed; parsed output retained string, boolean and nested values. |
+| YAML → TOML | Morph structured-data engine | Passed; compatible values converted to TOML. |
+| TOML → YML | Morph structured-data engine | Passed; generated YAML reparsed successfully. |
+| YML → JSON | Morph structured-data engine | Passed; parsed output retained the expected structured values. |
 | ZIP → TAR.GZ | macOS archive tools | Passed; resulting TAR.GZ listed successfully. |
 | TAR.GZ → ZIP | macOS archive tools | Passed; ZIP integrity and expected member checked. |
 | TIFF → JPEG | Apple ImageIO | Passed as part of a two-file batch; decoded, collision-safe name verified. |
@@ -60,10 +67,12 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | Cancellation | Passed; cancelled child process stopped within the 3-second test limit. |
 | Large image | Passed; converted a locally generated 2048 × 2048 noisy PNG larger than 12 MB and kept the source unchanged. |
 | Conversion staging cleanup | Passed; no `.morph-*.staging` directory or `.partial` file remained after PNG → ICO or after failed/fallback engine attempts. |
+| YAML/TOML validation and safety limits | Passed; output validation reparsed generated documents, YAML 1.2 kept `on` and bare dates as strings, a multi-document YAML input was rejected without output, and original JSON/YAML SHA-256 hashes were unchanged. |
 | Batch rename copies | Passed; previewed numbered names across inputs from different folders, preserved the full `.tar.gz` suffix, resolved an existing destination collision, copied exact file contents, rejected unsafe prefixes and symbolic-link inputs, preserved originals and existing outputs, and removed staging files. |
 | Installed app and Finder integration | Passed; installed Morph 0.1.0 at `~/Applications/Morph.app` is universal (`arm64 x86_64`). Finder's right-click Quick Actions submenu displayed **Convert with Morph**; invoking it on a selected PDF imported that exact file into Morph. Finder Services and the installed Automator workflow CLI also imported selected files and consumed their temporary manifests. |
 | Installed Operations screen | Passed; refreshed and launched the installed universal 0.1.0 app, opened the Operations page, and opened then cancelled its native multi-file picker. Batch-copy execution itself was validated by the automated core harness rather than through the installed UI. |
 | Installed app conversion | Passed; the installed 0.1.0 app converted the Finder fixture PNG to JPEG through its UI. `sips` identified a non-empty 1254 × 1254 JPEG; the original PNG SHA-256 remained `dec0374ba45276a3c08ac50fb11f3569ecca20198741eff419d5eaa3dd6c31a0`. |
+| Installed YAML/TOML conversions | Passed live in installed Morph 0.1.0. YAML → JSON was selected through the native file picker from the workspace; TOML → JSON ran after invoking the installed Automator Quick Action; the installed universal build also converted YAML → TOML. Python's JSON parser and TOML parser validated expected values including YAML's `on` string, source SHA-256 checks matched before and after, and the existing destination was preserved with a collision-safe `settings-2.json` name. |
 | Installed conversion presets | Passed live in the installed app. With a PNG selected, the Presets menu showed Images to JPEG and Images to WebP · 80%; unavailable video, audio and document presets were absent. Selecting WebP converted the sample to a valid 1254 × 1254 WebP (150,032 bytes); the input SHA-256 remained `dec0374ba45276a3c08ac50fb11f3569ecca20198741eff419d5eaa3dd6c31a0`. |
 | Installed metadata inspection | Passed live in the updated 0.1.0 app. The installed Finder workflow imported `Morph-metadata-smoke.png`; the inspector displayed its PNG format, 1.6 MB size, 1254 × 1254 dimensions and RGB color model. The source file remained unchanged. |
 | Installed PDF compression | Passed end to end from Finder's right-click Quick Actions menu: Morph imported the selected PDF, and **Compress PDF** produced a separate valid one-page PDF (276,382 bytes from a 1,452,001-byte source). `pdfinfo` validated the output; the original remained present at its original size. |
@@ -71,7 +80,7 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | Liquid Glass primary action and file picker | Passed on macOS 26.6.2; the installed universal app launched with its prominent system button style. Clicking **Choose Files** opened the native multi-file picker; Escape cancelled and returned to the overview. The macOS 14–25 bordered-button fallback compiled but was not runtime-tested on an older macOS version. Screenshot: [`morph-overview.png`](screenshots/morph-overview.png). |
 | Installed PDF page-range extraction | Passed live through the installed Finder Quick Action. Extracting page 1 from a one-page PDF produced a valid one-page output; the original SHA-256 stayed `8164fc731e39b6a8cd42133347fef2d900e49f019e100c9ff653bd2becd293ec`. |
 | Installed video trim | Passed in installed Morph 0.1.0 from the v15 package after importing the selected MP4 through the installed Finder Quick Action workflow. The Trim dialog generated a valid 0.6667-second H.264 MP4 from the requested 0.25–0.90-second interval; the original SHA-256 remained unchanged. |
-| Universal release package | Passed; `.build/release-artifacts-v15/Morph-0.1.0-macOS-universal.zip` contains arm64 + x86_64, `unzip -t` reported no archive errors, and `shasum -a 256 -c` verified SHA-256 `25f987d6af35d4b4ccff073cf8b31f955778b2c76fd12caacf6f00c013500945`. It is ad-hoc signed, fails Gatekeeper assessment and is not eligible for public distribution. |
+| Universal release package | Passed; `.build/release-final-2/Morph-0.1.0-macOS-universal.zip` contains arm64 + x86_64, all four third-party license texts, the Apache license and Finder workflow. `unzip -t` reported no archive errors, AppleDouble entries are absent, and `shasum -a 256 -c` verified SHA-256 `eebbb45c3b4ce32198ef857a100adcf698041628cfd276ac988f5fb38412b5c1`. It is ad-hoc signed, fails Gatekeeper assessment and is not eligible for public distribution. |
 | Dependency consent cancellation | Passed; the live **Uninstall FFmpeg?** confirmation was opened and cancelled. Morph continued to show FFmpeg installed, and no Homebrew install, uninstall or upgrade process ran. No package was installed or removed. |
 
 ## GitHub Actions architecture coverage

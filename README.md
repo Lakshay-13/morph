@@ -12,7 +12,7 @@ Morph is a native SwiftUI macOS utility for converting and transforming files wi
 - Drag and drop or select multiple files in the app. Mixed selections can be batch-converted when every input shares the chosen output route.
 - Runtime format discovery from Apple ImageIO, FFmpeg codecs and containers, ImageMagick, Pandoc, Poppler and LibreOffice.
 - Fallback to another registered engine when a higher-priority adapter fails and a second route exists.
-- Native image conversion and image-to-PDF, audio/video conversion, document conversion, PDF text extraction, JSON/CSV/TSV/XML conversion and ZIP/TAR.GZ repackaging.
+- Native image conversion and image-to-PDF, audio/video conversion, document conversion, PDF text extraction, JSON/YAML/TOML/CSV/TSV/XML data transformations and ZIP/TAR.GZ repackaging.
 - Quick actions for 50% image resizing, merging selected PDFs, extracting selected PDF page ranges, splitting a PDF into pages, preset-based PDF compression, extracting ZIP archives and trimming a selected video to an H.264 MP4 clip.
 - A dedicated Operations page previews numbered batch-renamed copies, preserves each full filename and extension, and leaves the original files unchanged.
 - Read-only image and PDF metadata inspection, including image dimensions and available camera fields, or PDF page count and document attributes.
@@ -37,11 +37,11 @@ Morph shows a conversion only when the detected input capability, output capabil
 | Images | Apple ImageIO formats available on this macOS install; optional ImageMagick routes when detected. Image resizing writes JPEG. |
 | Audio and video | FFmpeg routes based on this installed FFmpeg build's input demuxers, output muxers and required encoders. Includes audio extraction where a source has an audio stream and a trim operation that writes a selected time range to a new H.264 MP4. |
 | Documents | Pandoc routes for detected reader/writer formats; LibreOffice converts within text-document or presentation families and exports those files to PDF. PDF text extraction uses Poppler. |
-| Spreadsheets and data | LibreOffice converts within spreadsheet formats and exports them to PDF; Morph provides local JSON ↔ CSV, JSON ↔ XML and CSV ↔ TSV transformations. |
+| Spreadsheets and data | LibreOffice converts within spreadsheet formats and exports them to PDF; Morph converts JSON, YAML/YML and TOML between one another and to/from CSV/TSV. XML bridges to JSON, YAML/YML and TOML. CSV/TSV and TOML record conversions use arrays of objects; a top-level array becomes a TOML `records` table. |
 | Archives | ZIP ↔ TAR.GZ repackaging and ZIP extraction. Archive paths are checked before extraction and extracted links are checked for escapes. |
 | PDF operations | Image-to-PDF, merge selected PDFs, extract ordered page ranges or split into pages with PDFKit; Ghostscript PDF compression with Compact, Balanced and Print quality presets. |
 
-The format registry includes other candidate types, but unsupported candidates are not shown as conversion choices. There are no active routes yet for 7z/RAR conversion, RAW processing, font conversion, YAML/TOML conversion, CAD, geospatial or scientific formats. Metadata editing is not implemented. Batch rename creates numbered copies in the configured output location; it never renames or replaces the selected originals. Video trimming re-encodes to H.264/AAC; quality can change, and subtitles or some metadata may not carry over. The in-app prompt explains this before trimming. Metadata inspection supports image and PDF files and does not write to the source.
+The format registry includes other candidate types, but unsupported candidates are not shown as conversion choices. There are no active routes yet for 7z/RAR conversion, RAW processing, font conversion, CAD, geospatial or scientific formats. Structured-data conversions accept UTF-8 and JSON-compatible values; YAML input must contain one document. Parser limits protect input size, nesting, collection lengths and table sizes. TOML requires a top-level table; CSV/TSV conversion requires records with matching string fields. Metadata editing is not implemented. Batch rename creates numbered copies in the configured output location; it never renames or replaces the selected originals. Video trimming re-encodes to H.264/AAC; quality can change, and subtitles or some metadata may not carry over. The in-app prompt explains this before trimming. Metadata inspection supports image and PDF files and does not write to the source.
 
 ## Engines and dependencies
 
@@ -64,7 +64,7 @@ Do not use Gatekeeper-bypass instructions. Homebrew requires macOS executable ar
 
 ### Build from source
 
-Requirements: macOS 14 or later, Swift 5.9 or later, and Xcode Command Line Tools. Optional conversion routes require the corresponding engine.
+Requirements: macOS 14 or later, Swift 6.0 or later, and compatible Xcode Command Line Tools. Optional conversion routes require the corresponding engine.
 
 ```sh
 git clone https://github.com/Lakshay-13/morph.git

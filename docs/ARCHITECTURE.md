@@ -7,6 +7,7 @@
 - **ConversionService** resolves an input extension, tries candidate routes in deterministic priority order, runs each registered `ConversionEngine`, validates the staged output and moves the first valid result to a unique destination. A failed adapter's staged output is removed before the next route is attempted. The `ConversionEngine` protocol supports adding independent adapters.
 - **MorphApp** provides file selection/drop, Finder file-open intake, format selection, batch execution, history, settings and explicit Homebrew actions.
 - **MorphFileOperations** holds additional operations that are not simple format edges: read-only image/PDF metadata inspection, image resize, previewed batch rename copies, PDF merge/page-range extraction/split/compression, ZIP extraction and FFmpeg video trimming. Process-backed operations use fixed executable arguments and write to validated staging files.
+- **StructuredDataEngine** handles local JSON, YAML/YML, TOML, CSV/TSV and XML routes. Yams (with its bundled LibYAML) and swift-toml (with bundled toml++) are pinned SwiftPM dependencies; they are statically linked and their license texts ship in the app bundle. Parsing is size/depth/collection limited, and conversions reject values the target representation cannot express.
 
 ## Data flow
 

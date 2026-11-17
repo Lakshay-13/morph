@@ -9,8 +9,18 @@ let package = Package(
         .executable(name: "Morph", targets: ["MorphApp"]),
         .executable(name: "MorphChecks", targets: ["MorphChecks"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/jpsim/Yams.git", exact: "6.2.2"),
+        .package(url: "https://github.com/mattt/swift-toml.git", exact: "2.0.0"),
+    ],
     targets: [
-        .target(name: "MorphCore"),
+        .target(
+            name: "MorphCore",
+            dependencies: [
+                .product(name: "Yams", package: "Yams"),
+                .product(name: "TOML", package: "swift-toml"),
+            ]
+        ),
         .executableTarget(name: "MorphApp", dependencies: ["MorphCore"]),
         .executableTarget(name: "MorphChecks", dependencies: ["MorphCore"], path: "Tests/MorphChecks"),
     ],
