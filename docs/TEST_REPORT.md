@@ -5,7 +5,7 @@
 **Run date:** 2026-11-18
 
 **Command:** `Scripts/run-checks.sh` with SwiftPM using the selected Xcode 27 toolchain
-**Result:** 17 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs, one PDF page-range extraction and one PDF compression operation were executed with real generated files.
+**Result:** 18 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs, PDF page-range extraction, PDF compression and video trimming were executed with real generated files.
 
 The harness checks that each conversion output exists and is non-empty, runs `OutputValidator`, verifies the generated content or media properties where practical, and checks SHA-256 of the original file before and after conversion. Fixtures are generated locally; no network service is used for conversion.
 
@@ -22,6 +22,7 @@ The harness checks that each conversion output exists and is non-empty, runs `Ou
 | MP3 → WAV | FFmpeg 8.1.1 | Passed; FFprobe recognized output container. |
 | MP4 → WebM | FFmpeg 8.1.1 | Passed; FFprobe recognized output container. |
 | MP4 → MP3 | FFmpeg 8.1.1 | Passed; audio extraction output recognized by FFprobe. |
+| MP4 → trimmed MP4 clip | FFmpeg 8.1.1 | Passed; generated a real two-second source, trimmed 0.25–0.90 seconds, verified MP4 validity and output duration with FFprobe, checked collision-safe naming and confirmed the source SHA-256 was unchanged. |
 | Markdown → DOCX | Pandoc 3.9.0.2 | Passed; DOCX ZIP package integrity checked. |
 | DOCX → HTML | Pandoc 3.9.0.2 | Passed; expected document text preserved. |
 | PDF → TXT | Poppler 26.04.0 | Passed; expected text preserved. |
@@ -48,6 +49,7 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | PDF merge and split | Passed; two one-page PDFs merged to two pages and split back into two one-page PDFs. Input checksums unchanged. |
 | PDF page-range extraction | Passed; selecting pages `2, 1` preserved requested order; invalid, duplicate and out-of-bounds selections were rejected; a repeated extraction used a collision-safe filename. Source checksum unchanged. |
 | PDF compression | Passed with Ghostscript 10.07.0 and the Balanced preset; PDFKit reopened the output with the same page count and source text, the input checksum stayed unchanged, and no staging file remained. |
+| Video trim range validation | Passed; accepted a finite, non-negative start and later end, rejected negative, equal, descending and non-finite ranges, and rejected an end beyond the source duration without leaving output files. |
 | LibreOffice route family constraints | Passed; DOCX, PPTX and XLSX each expose PDF export, while document ↔ spreadsheet and presentation → spreadsheet routes are not advertised. |
 | ZIP extraction | Passed; extracted file content matched, ZIP checksum unchanged. |
 | Image/PDF metadata inspection | Passed; ImageIO reported PNG dimensions and file size; PDFKit reported page count, title and author. Source checksums stayed unchanged. Invalid image metadata was rejected without modifying the file. |
@@ -65,7 +67,8 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | Sidebar and engine manager UI | Passed; all five sidebar buttons navigate, and the Engines page showed the detected engine versions and routes. |
 | Liquid Glass primary action and file picker | Passed on macOS 26.6.2; the installed universal app launched with its prominent system button style. Clicking **Choose Files** opened the native multi-file picker; Escape cancelled and returned to the overview. The macOS 14–25 bordered-button fallback compiled but was not runtime-tested on an older macOS version. Screenshot: [`morph-overview.png`](screenshots/morph-overview.png). |
 | Installed PDF page-range extraction | Passed live through the installed Finder Quick Action. Extracting page 1 from a one-page PDF produced a valid one-page output; the original SHA-256 stayed `8164fc731e39b6a8cd42133347fef2d900e49f019e100c9ff653bd2becd293ec`. |
-| Universal release package | Passed; `.build/release-artifacts-v13/Morph-0.1.0-macOS-universal.zip` contains arm64 + x86_64, `unzip -t` reported no archive errors, and `shasum -a 256 -c` verified SHA-256 `89a4a11000984072aeb74ed92f573fd7668087cf71e93392a8e6c766021ee83d`. It is ad-hoc signed, fails Gatekeeper assessment and is not eligible for public distribution. |
+| Installed video trim | Passed in installed Morph 0.1.0 from the v15 package after importing the selected MP4 through the installed Finder Quick Action workflow. The Trim dialog generated a valid 0.6667-second H.264 MP4 from the requested 0.25–0.90-second interval; the original SHA-256 remained unchanged. |
+| Universal release package | Passed; `.build/release-artifacts-v15/Morph-0.1.0-macOS-universal.zip` contains arm64 + x86_64, `unzip -t` reported no archive errors, and `shasum -a 256 -c` verified SHA-256 `25f987d6af35d4b4ccff073cf8b31f955778b2c76fd12caacf6f00c013500945`. It is ad-hoc signed, fails Gatekeeper assessment and is not eligible for public distribution. |
 | Dependency consent cancellation | Passed; the live **Uninstall FFmpeg?** confirmation was opened and cancelled. Morph continued to show FFmpeg installed, and no Homebrew install, uninstall or upgrade process ran. No package was installed or removed. |
 
 ## Limitations of this run

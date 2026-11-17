@@ -6,7 +6,7 @@
 - **EngineRegistry** discovers local binaries and probes their available formats. A route is created only when the corresponding engine is installed and advertises the required input/output capability. FFmpeg output routes also require the encoder used by Morph's adapter.
 - **ConversionService** resolves an input extension, tries candidate routes in deterministic priority order, runs each registered `ConversionEngine`, validates the staged output and moves the first valid result to a unique destination. A failed adapter's staged output is removed before the next route is attempted. The `ConversionEngine` protocol supports adding independent adapters.
 - **MorphApp** provides file selection/drop, Finder file-open intake, format selection, batch execution, history, settings and explicit Homebrew actions.
-- **MorphFileOperations** holds additional operations that are not simple format edges: read-only image/PDF metadata inspection, image resize, PDF merge/page-range extraction/split/compression and ZIP extraction. PDF compression is a fixed-argument Ghostscript process adapter and writes to a validated staging file.
+- **MorphFileOperations** holds additional operations that are not simple format edges: read-only image/PDF metadata inspection, image resize, PDF merge/page-range extraction/split/compression, ZIP extraction and FFmpeg video trimming. Process-backed operations use fixed executable arguments and write to validated staging files.
 
 ## Data flow
 
@@ -41,6 +41,8 @@ The action appears under Finder's **Quick Actions** context menu. Finder Sync is
 4. Produces conversion routes for the installed and implemented adapters.
 
 Routes are deterministic: built-in adapters are preferred, followed by FFmpeg/Pandoc/Poppler, then other optional adapters. LibreOffice is listed only after a real executable is found. Ghostscript provides a PDF-compression operation outside the route graph. `libvips` and 7-Zip are probed as future candidates without current Morph conversion adapters.
+
+Video trimming is an FFmpeg operation outside the general route graph. Morph checks the source duration, re-encodes the requested interval as H.264/AAC MP4, validates the resulting media and duration, and selects a unique destination. The confirmation explains that quality may change and subtitles or some metadata may not carry over. It preserves the source and can cancel the FFmpeg process. If FFmpeg is absent, Morph asks before offering installation and retries the request after approval.
 
 ## Dependency actions
 

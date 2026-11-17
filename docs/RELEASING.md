@@ -10,7 +10,7 @@ MORPH_VERSION=0.1.0 MORPH_DIST_DIR="$PWD/release-output" Scripts/package-release
 
 The ZIP contains `Morph.app` and the Finder Quick Action workflow at its root. The ZIP is ignored by Git. Keep the exact tested archive and its checksum together. Do not publish the current ad-hoc build.
 
-The latest local package is `.build/release-artifacts-v13/Morph-0.1.0-macOS-universal.zip` (arm64 + x86_64), SHA-256 `89a4a11000984072aeb74ed92f573fd7668087cf71e93392a8e6c766021ee83d`. Its ZIP integrity and checksum were verified. It is a local validation artifact, not a GitHub release; it is ad-hoc signed, fails Gatekeeper assessment and must not be used for the public Cask. The draft Cask's SHA is only a local placeholder and must be replaced with the final signed/notarized archive's checksum.
+The latest local package is `.build/release-artifacts-v15/Morph-0.1.0-macOS-universal.zip` (arm64 + x86_64), SHA-256 `25f987d6af35d4b4ccff073cf8b31f955778b2c76fd12caacf6f00c013500945`. Its ZIP integrity, code signature and checksum were verified. It is a local validation artifact, not a GitHub release; it is ad-hoc signed, fails Gatekeeper assessment and must not be used for the public Cask. The draft Cask's SHA is only a local placeholder and must be replaced with the final signed/notarized archive's checksum.
 
 ## Developer ID signing and notarization
 

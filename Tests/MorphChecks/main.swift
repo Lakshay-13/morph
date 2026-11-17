@@ -28,6 +28,7 @@ final class MorphCheckSuite {
         test("native images and PDF") { try checkImagesAndPDF($0) }
         test("route-aware conversion presets") { _ in try checkConversionPresets() }
         test("audio and video with FFmpeg") { try checkAudioVideo($0) }
+        test("video trimming") { try checkVideoTrimming($0) }
         test("documents and PDF text") { try checkDocuments($0) }
         test("LibreOffice routes stay within compatible format families") { _ in try checkLibreOfficeRoutes() }
         test("PDF compression with Ghostscript") { try checkPDFCompression($0) }
@@ -149,6 +150,60 @@ final class MorphCheckSuite {
         try validateWithFFprobe(webm, ffmpeg: ffmpeg)
         try validateWithFFprobe(extractedAudio, ffmpeg: ffmpeg)
         try expect(try sha256(mp4) == mp4Hash, "MP4 source changed")
+    }
+
+    private func checkVideoTrimming(_ folder: URL) throws {
+        guard let ffmpeg = registry.status(for: .ffmpeg)?.executableURL, registry.isAvailable(.ffmpeg),
+              let ffprobe = ExecutableLocator.resolve(["ffprobe"]) else {
+            throw CheckSkip("FFmpeg/FFprobe is not installed")
+        }
+        let input = folder.appendingPathComponent("trim-source.mp4")
+        let generated = try ProcessRunner.run(executable: ffmpeg, arguments: [
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc=size=96x64:rate=24:duration=2",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+            "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", input.path,
+        ])
+        try expect(generated.status == 0, "Could not generate trim fixture: \(generated.stderr)")
+        let sourceHash = try sha256(input)
+        let range = try MorphFileOperations.parseVideoTrimRange(start: " 0.25 ", end: " 0.9 ")
+        try expect(abs(range.startSeconds - 0.25) < 0.0001 && abs(range.durationSeconds - 0.65) < 0.0001, "Video trim range parsing changed the requested interval")
+        for invalid in [("-1", "1"), ("1", "1"), ("2", "1"), ("nan", "2")] {
+            do {
+                _ = try MorphFileOperations.parseVideoTrimRange(start: invalid.0, end: invalid.1)
+                throw CheckFailure("Invalid video trim interval \(invalid) was accepted")
+            } catch let failure as CheckFailure {
+                throw failure
+            } catch {
+                // Invalid intervals must be rejected before any conversion starts.
+            }
+        }
+
+        let outputDirectory = folder.appendingPathComponent("output", isDirectory: true)
+        let trimmed = try MorphFileOperations.trimVideo(input, startSeconds: 0.25, endSeconds: 0.9, outputDirectory: outputDirectory)
+        try OutputValidator.validate(trimmed, format: MorphFormat("mp4", "MP4", .video), engine: .ffmpeg)
+        let durationResult = try ProcessRunner.run(executable: ffprobe, arguments: [
+            "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", trimmed.path,
+        ])
+        guard durationResult.status == 0,
+              let duration = Double(durationResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw CheckFailure("FFprobe could not read the trimmed clip duration: \(durationResult.stderr)")
+        }
+        try expect(abs(duration - 0.65) <= 0.25, "Trimmed video has an unexpected duration: \(duration)")
+        try expect(try Data(contentsOf: trimmed).count > 0, "Trimmed MP4 is empty")
+        let beforeOutOfBounds = try FileManager.default.contentsOfDirectory(atPath: outputDirectory.path)
+        do {
+            _ = try MorphFileOperations.trimVideo(input, startSeconds: 1.5, endSeconds: 2.5, outputDirectory: outputDirectory)
+            throw CheckFailure("A trim ending beyond the source duration was accepted")
+        } catch let failure as CheckFailure {
+            throw failure
+        } catch {
+            // End times beyond the probed source duration must be rejected before encoding.
+        }
+        try expect(try FileManager.default.contentsOfDirectory(atPath: outputDirectory.path) == beforeOutOfBounds, "An out-of-bounds trim left a partial output")
+        let secondTrim = try MorphFileOperations.trimVideo(input, startSeconds: 0.25, endSeconds: 0.9, outputDirectory: outputDirectory)
+        try expect(secondTrim.lastPathComponent == "trim-source-trimmed-2.mp4", "Repeated video trim did not choose a collision-safe output name")
+        try expect(try sha256(input) == sourceHash, "Video trimming changed the original source")
     }
 
     private func checkDocuments(_ folder: URL) throws {

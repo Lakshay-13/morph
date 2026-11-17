@@ -16,6 +16,7 @@ enum QuickAction: String, CaseIterable, Identifiable, Hashable {
     case resizeImages = "Resize images to 50%"
     case mergePDFs = "Merge selected PDFs"
     case extractPDFPages = "Extract PDF pages…"
+    case trimVideo = "Trim video…"
     case splitPDF = "Split PDF into pages"
     case compressPDF = "Compress PDF"
     case extractZIP = "Extract ZIP archive"
@@ -27,6 +28,7 @@ enum QuickAction: String, CaseIterable, Identifiable, Hashable {
         case .resizeImages: "arrow.down.right.and.arrow.up.left"
         case .mergePDFs: "doc.on.doc"
         case .extractPDFPages: "doc.text.magnifyingglass"
+        case .trimVideo: "scissors"
         case .splitPDF: "square.split.2x1"
         case .compressPDF: "arrow.down.doc"
         case .extractZIP: "archivebox"
@@ -170,6 +172,16 @@ final class MorphModel: ObservableObject {
             actions.append(.extractPDFPages)
             actions.append(.splitPDF)
             actions.append(.compressPDF)
+        }
+        let videoExtensions: Set<String> = ["mp4", "m4v", "mov", "mkv", "avi", "webm", "mpeg", "mpg", "wmv", "flv", "3gp", "3g2"]
+        if extensions.count == 1, let inputExtension = extensions.first, videoExtensions.contains(inputExtension) {
+            if let status = registry?.status(for: .ffmpeg), status.isInstalled {
+                if status.supportedInputExtensions.contains(inputExtension), status.supportedOutputExtensions.contains("mp4") {
+                    actions.append(.trimVideo)
+                }
+            } else {
+                actions.append(.trimVideo)
+            }
         }
         if extensions.count == 1, extensions[0] == "zip" { actions.append(.extractZIP) }
         return actions
@@ -342,6 +354,10 @@ final class MorphModel: ObservableObject {
             requestPDFPageRange()
             return
         }
+        if action == .trimVideo {
+            requestVideoTrim()
+            return
+        }
         if action == .compressPDF, isDiscovering {
             conversionMessage = "Checking local conversion engines…"
             return
@@ -394,6 +410,8 @@ final class MorphModel: ObservableObject {
                     outputs = []
                 case .extractPDFPages:
                     outputs = []
+                case .trimVideo:
+                    outputs = []
                 }
                 await MainActor.run {
                     self.isRunningUtility = false
@@ -407,6 +425,7 @@ final class MorphModel: ObservableObject {
                         case .compressPDF: .ghostscript
                         case .inspectMetadata: .nativeImage
                         case .extractPDFPages: .nativePDF
+                        case .trimVideo: .ffmpeg
                         default: .nativePDF
                         }
                         return HistoryItem(id: UUID(), inputName: inputs[0].lastPathComponent, outputPath: $0.path, engineName: engine.displayName, date: Date())
@@ -508,6 +527,120 @@ final class MorphModel: ObservableObject {
                     self.isRunningUtility = false
                     self.lastError = error.localizedDescription
                     self.conversionMessage = "PDF page extraction could not be completed."
+                }
+            }
+        }
+    }
+
+    private func requestVideoTrim() {
+        guard selectedFiles.count == 1, let input = selectedFiles.first else { return }
+        guard !isDiscovering else {
+            conversionMessage = "Checking local video engines…"
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Trim video"
+        alert.informativeText = "Enter the start and end times in seconds. Morph will create an H.264 MP4 copy. Re-encoding can change quality, and subtitles or some metadata may not carry over. The original stays unchanged."
+        alert.alertStyle = .informational
+        let startField = NSTextField(string: "0")
+        startField.placeholderString = "Start (seconds)"
+        let endField = NSTextField(string: "10")
+        endField.placeholderString = "End (seconds)"
+        startField.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        endField.frame = startField.frame
+        let fields = NSStackView(views: [startField, endField])
+        fields.orientation = .vertical
+        fields.spacing = 8
+        fields.alignment = .leading
+        alert.accessoryView = fields
+        alert.addButton(withTitle: "Trim")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        trimVideo(start: startField.stringValue, end: endField.stringValue, input: input)
+    }
+
+    private func trimVideo(start: String, end: String, input: URL) {
+        let range: (startSeconds: Double, durationSeconds: Double)
+        do {
+            range = try MorphFileOperations.parseVideoTrimRange(start: start, end: end)
+        } catch {
+            lastError = error.localizedDescription
+            conversionMessage = "Video trimming could not be completed."
+            return
+        }
+        guard let status = registry?.status(for: .ffmpeg), status.isInstalled else {
+            installEngine(
+                .ffmpeg,
+                reason: "FFmpeg is required to trim video to an H.264 MP4 clip. It also enables local audio/video conversion and audio extraction.",
+                onSuccess: { [weak self] in
+                    self?.selectedSection = .convert
+                    self?.runVideoTrim(input: input, range: range)
+                },
+                onCancel: { [weak self] in self?.selectedSection = .convert }
+            )
+            return
+        }
+        guard status.supportedInputExtensions.contains(input.pathExtension.lowercased()),
+              status.supportedOutputExtensions.contains("mp4") else {
+            lastError = "The installed FFmpeg build cannot trim this input to MP4."
+            conversionMessage = "Video trimming is unavailable for this format."
+            return
+        }
+        runVideoTrim(input: input, range: range)
+    }
+
+    private func runVideoTrim(input: URL, range: (startSeconds: Double, durationSeconds: Double)) {
+        guard !isConverting, !isRunningUtility, activeEngineAction == nil else { return }
+        let outputDirectory = Self.outputDirectory(for: input, settings: settings)
+        let currentSettings = settings
+        let start = range.startSeconds
+        let end = start + range.durationSeconds
+        isRunningUtility = true
+        isRunningUtilityCancellable = true
+        conversionMessage = "Trimming video…"
+        lastError = nil
+        let token = CancellationToken()
+        utilityCancellation = token
+
+        Task.detached(priority: .userInitiated) {
+            do {
+                let output = try MorphFileOperations.trimVideo(
+                    input,
+                    startSeconds: start,
+                    endSeconds: end,
+                    outputDirectory: outputDirectory,
+                    cancellation: token
+                )
+                await MainActor.run {
+                    self.isRunningUtility = false
+                    self.isRunningUtilityCancellable = false
+                    self.utilityCancellation = nil
+                    self.conversionMessage = "Created a trimmed MP4 copy."
+                    self.history.insert(HistoryItem(
+                        id: UUID(),
+                        inputName: input.lastPathComponent,
+                        outputPath: output.path,
+                        engineName: EngineID.ffmpeg.displayName,
+                        date: Date()
+                    ), at: 0)
+                    self.history = Array(self.history.prefix(200))
+                    self.saveHistory()
+                    if currentSettings.revealOutputAfterConversion {
+                        NSWorkspace.shared.activateFileViewerSelecting([output])
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.isRunningUtility = false
+                    self.isRunningUtilityCancellable = false
+                    self.utilityCancellation = nil
+                    if let morphError = error as? MorphError, case .cancelled = morphError {
+                        self.lastError = nil
+                        self.conversionMessage = "Video trimming cancelled. The original was left unchanged."
+                    } else {
+                        self.lastError = error.localizedDescription
+                        self.conversionMessage = "Video trimming could not be completed."
+                    }
                 }
             }
         }

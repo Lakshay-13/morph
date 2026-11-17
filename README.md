@@ -13,7 +13,7 @@ Morph is a native SwiftUI macOS utility for converting and transforming files wi
 - Runtime format discovery from Apple ImageIO, FFmpeg codecs and containers, ImageMagick, Pandoc, Poppler and LibreOffice.
 - Fallback to another registered engine when a higher-priority adapter fails and a second route exists.
 - Native image conversion and image-to-PDF, audio/video conversion, document conversion, PDF text extraction, JSON/CSV/TSV/XML conversion and ZIP/TAR.GZ repackaging.
-- Quick actions for 50% image resizing, merging selected PDFs, extracting selected PDF page ranges, splitting a PDF into pages, preset-based PDF compression and extracting ZIP archives.
+- Quick actions for 50% image resizing, merging selected PDFs, extracting selected PDF page ranges, splitting a PDF into pages, preset-based PDF compression, extracting ZIP archives and trimming a selected video to an H.264 MP4 clip.
 - Read-only image and PDF metadata inspection, including image dimensions and available camera fields, or PDF page count and document attributes.
 - Route-aware conversion presets for Images to JPEG, Images to WebP at 80% quality, Video to MP4 with H.264, audio extraction to MP3 and Documents to PDF. Presets appear only when every selected file has the required locally available output route.
 - Output beside the source, in `~/Documents/Morph Output`, or in a chosen folder. Existing files are never replaced.
@@ -34,13 +34,13 @@ Morph shows a conversion only when the detected input capability, output capabil
 | Family | Implemented routes and operations |
 |---|---|
 | Images | Apple ImageIO formats available on this macOS install; optional ImageMagick routes when detected. Image resizing writes JPEG. |
-| Audio and video | FFmpeg routes based on this installed FFmpeg build's input demuxers, output muxers and required encoders. Includes audio extraction where a source has an audio stream. |
+| Audio and video | FFmpeg routes based on this installed FFmpeg build's input demuxers, output muxers and required encoders. Includes audio extraction where a source has an audio stream and a trim operation that writes a selected time range to a new H.264 MP4. |
 | Documents | Pandoc routes for detected reader/writer formats; LibreOffice converts within text-document or presentation families and exports those files to PDF. PDF text extraction uses Poppler. |
 | Spreadsheets and data | LibreOffice converts within spreadsheet formats and exports them to PDF; Morph provides local JSON ↔ CSV, JSON ↔ XML and CSV ↔ TSV transformations. |
 | Archives | ZIP ↔ TAR.GZ repackaging and ZIP extraction. Archive paths are checked before extraction and extracted links are checked for escapes. |
 | PDF operations | Image-to-PDF, merge selected PDFs, extract ordered page ranges or split into pages with PDFKit; Ghostscript PDF compression with Compact, Balanced and Print quality presets. |
 
-The format registry includes other candidate types, but unsupported candidates are not shown as conversion choices. There are no active routes yet for 7z/RAR conversion, RAW processing, font conversion, YAML/TOML conversion, CAD, geospatial or scientific formats. Video trimming, metadata editing and batch renaming are not implemented. Metadata inspection supports image and PDF files; it reads locally and does not write to the source.
+The format registry includes other candidate types, but unsupported candidates are not shown as conversion choices. There are no active routes yet for 7z/RAR conversion, RAW processing, font conversion, YAML/TOML conversion, CAD, geospatial or scientific formats. Metadata editing and batch renaming are not implemented. Video trimming re-encodes to H.264/AAC; quality can change, and subtitles or some metadata may not carry over. The in-app prompt explains this before trimming. Metadata inspection supports image and PDF files and does not write to the source.
 
 ## Engines and dependencies
 

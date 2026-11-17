@@ -319,6 +319,72 @@ public enum MorphFileOperations {
         return destination
     }
 
+    public static func parseVideoTrimRange(start: String, end: String) throws -> (startSeconds: Double, durationSeconds: Double) {
+        let startText = start.trimmingCharacters(in: .whitespacesAndNewlines)
+        let endText = end.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let startSeconds = Double(startText), let endSeconds = Double(endText),
+              startSeconds.isFinite, endSeconds.isFinite,
+              startSeconds >= 0, endSeconds > startSeconds else {
+            throw MorphError.invalidInput("Enter a non-negative start time and a later end time, in seconds.")
+        }
+        return (startSeconds, endSeconds - startSeconds)
+    }
+
+    @discardableResult
+    public static func trimVideo(
+        _ input: URL,
+        startSeconds: Double,
+        endSeconds: Double,
+        outputDirectory: URL? = nil,
+        cancellation: CancellationToken? = nil
+    ) throws -> URL {
+        guard FileManager.default.fileExists(atPath: input.path) else {
+            throw MorphError.invalidInput("The selected video is no longer available.")
+        }
+        guard startSeconds.isFinite, endSeconds.isFinite, startSeconds >= 0, endSeconds > startSeconds else {
+            throw MorphError.invalidInput("The end time must be later than a non-negative start time.")
+        }
+        guard let ffmpeg = ExecutableLocator.resolve(["ffmpeg"]),
+              let ffprobe = ExecutableLocator.resolve(["ffprobe"]) else {
+            throw MorphError.missingEngine(.ffmpeg)
+        }
+
+        let sourceDuration = try mediaDuration(input, ffprobe: ffprobe, cancellation: cancellation)
+        guard endSeconds <= sourceDuration + 0.05 else {
+            throw MorphError.invalidInput("The end time is beyond the video's duration of \(String(format: "%.2f", sourceDuration)) seconds.")
+        }
+
+        let directory = outputDirectory ?? input.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let output = uniqueURL(baseName: input.deletingPathExtension().lastPathComponent + "-trimmed", extension: "mp4", directory: directory)
+        let temporary = temporaryFile(for: output)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        let range = try parseVideoTrimRange(start: String(startSeconds), end: String(endSeconds))
+        let result = try ProcessRunner.run(executable: ffmpeg, arguments: [
+            "-hide_banner", "-loglevel", "error", "-nostdin", "-n",
+            "-ss", String(range.startSeconds), "-i", input.path,
+            "-t", String(range.durationSeconds),
+            "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "22",
+            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-f", "mp4",
+            temporary.path,
+        ], cancellation: cancellation)
+        guard result.status == 0 else {
+            throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "FFmpeg could not trim this video."
+                : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        try OutputValidator.validate(temporary, format: MorphFormat("mp4", "MP4", .video), engine: .ffmpeg)
+        let outputDuration = try mediaDuration(temporary, ffprobe: ffprobe, cancellation: cancellation)
+        guard abs(outputDuration - range.durationSeconds) <= max(0.25, range.durationSeconds * 0.05) else {
+            throw MorphError.invalidOutput("FFmpeg produced a clip with an unexpected duration.")
+        }
+        if cancellation?.isCancelled == true { throw MorphError.cancelled }
+        try commit(temporary, to: output)
+        return output
+    }
+
     private static func validateArchivePaths(_ listing: String) throws {
         for line in listing.split(separator: "\n") {
             let path = String(line).replacingOccurrences(of: "\\", with: "/")
@@ -337,6 +403,18 @@ public enum MorphFileOperations {
                 throw MorphError.invalidInput("The archive contains a link that escapes its extraction folder.")
             }
         }
+    }
+
+    private static func mediaDuration(_ input: URL, ffprobe: URL, cancellation: CancellationToken?) throws -> Double {
+        let result = try ProcessRunner.run(executable: ffprobe, arguments: [
+            "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input.path,
+        ], cancellation: cancellation)
+        guard result.status == 0,
+              let duration = Double(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)),
+              duration.isFinite, duration > 0 else {
+            throw MorphError.invalidInput("FFprobe could not read the video's duration.")
+        }
+        return duration
     }
 
     private static func uniqueURL(baseName: String, extension fileExtension: String, directory: URL, isDirectory: Bool = false) -> URL {
