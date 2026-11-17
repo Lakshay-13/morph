@@ -6,7 +6,7 @@
 - **EngineRegistry** discovers local binaries and probes their available formats. A route is created only when the corresponding engine is installed and advertises the required input/output capability. FFmpeg output routes also require the encoder used by Morph's adapter.
 - **ConversionService** resolves an input extension, tries candidate routes in deterministic priority order, runs each registered `ConversionEngine`, validates the staged output and moves the first valid result to a unique destination. A failed adapter's staged output is removed before the next route is attempted. The `ConversionEngine` protocol supports adding independent adapters.
 - **MorphApp** provides file selection/drop, Finder file-open intake, format selection, batch execution, history, settings and explicit Homebrew actions.
-- **MorphFileOperations** holds additional operations that are not simple format edges: read-only image/PDF metadata inspection, image resize, PDF merge/page-range extraction/split/compression, ZIP extraction and FFmpeg video trimming. Process-backed operations use fixed executable arguments and write to validated staging files.
+- **MorphFileOperations** holds additional operations that are not simple format edges: read-only image/PDF metadata inspection, image resize, previewed batch rename copies, PDF merge/page-range extraction/split/compression, ZIP extraction and FFmpeg video trimming. Process-backed operations use fixed executable arguments and write to validated staging files.
 
 ## Data flow
 
@@ -24,6 +24,8 @@ Finder Quick Action or file picker
 ```
 
 The source file is not used as an output path. Each engine attempt writes inside a unique hidden staging folder under the selected output directory, so its temporary files stay on the destination volume and are removed after success, failure or cancellation. Successful conversions validate before the final move. Collisions receive a numeric suffix rather than replacing a file.
+
+Batch rename is available from the app's Operations page. Morph previews a numbered prefix plus each complete original filename, so compound suffixes such as `.tar.gz` remain intact. It copies through a hidden staging file in the configured destination, verifies the copied size, then moves to a collision-safe path without replacing existing files. The source is never renamed or deleted. Cancellation stops before the next file and removes the active staging copy when possible.
 
 ## Finder integration
 

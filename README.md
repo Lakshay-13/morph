@@ -14,6 +14,7 @@ Morph is a native SwiftUI macOS utility for converting and transforming files wi
 - Fallback to another registered engine when a higher-priority adapter fails and a second route exists.
 - Native image conversion and image-to-PDF, audio/video conversion, document conversion, PDF text extraction, JSON/CSV/TSV/XML conversion and ZIP/TAR.GZ repackaging.
 - Quick actions for 50% image resizing, merging selected PDFs, extracting selected PDF page ranges, splitting a PDF into pages, preset-based PDF compression, extracting ZIP archives and trimming a selected video to an H.264 MP4 clip.
+- A dedicated Operations page previews numbered batch-renamed copies, preserves each full filename and extension, and leaves the original files unchanged.
 - Read-only image and PDF metadata inspection, including image dimensions and available camera fields, or PDF page count and document attributes.
 - Route-aware conversion presets for Images to JPEG, Images to WebP at 80% quality, Video to MP4 with H.264, audio extraction to MP3 and Documents to PDF. Presets appear only when every selected file has the required locally available output route.
 - Output beside the source, in `~/Documents/Morph Output`, or in a chosen folder. Existing files are never replaced.
@@ -40,7 +41,7 @@ Morph shows a conversion only when the detected input capability, output capabil
 | Archives | ZIP ↔ TAR.GZ repackaging and ZIP extraction. Archive paths are checked before extraction and extracted links are checked for escapes. |
 | PDF operations | Image-to-PDF, merge selected PDFs, extract ordered page ranges or split into pages with PDFKit; Ghostscript PDF compression with Compact, Balanced and Print quality presets. |
 
-The format registry includes other candidate types, but unsupported candidates are not shown as conversion choices. There are no active routes yet for 7z/RAR conversion, RAW processing, font conversion, YAML/TOML conversion, CAD, geospatial or scientific formats. Metadata editing and batch renaming are not implemented. Video trimming re-encodes to H.264/AAC; quality can change, and subtitles or some metadata may not carry over. The in-app prompt explains this before trimming. Metadata inspection supports image and PDF files and does not write to the source.
+The format registry includes other candidate types, but unsupported candidates are not shown as conversion choices. There are no active routes yet for 7z/RAR conversion, RAW processing, font conversion, YAML/TOML conversion, CAD, geospatial or scientific formats. Metadata editing is not implemented. Batch rename creates numbered copies in the configured output location; it never renames or replaces the selected originals. Video trimming re-encodes to H.264/AAC; quality can change, and subtitles or some metadata may not carry over. The in-app prompt explains this before trimming. Metadata inspection supports image and PDF files and does not write to the source.
 
 ## Engines and dependencies
 

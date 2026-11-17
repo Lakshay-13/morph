@@ -457,6 +457,95 @@ final class MorphModel: ObservableObject {
         utilityCancellation?.cancel()
     }
 
+    func batchRenamePlan(inputs: [URL], prefix: String) throws -> [BatchRenameTarget] {
+        let currentSettings = settings
+        let directories = inputs.map { Self.outputDirectory(for: $0, settings: currentSettings) }
+        return try MorphFileOperations.planBatchRenamedCopies(
+            inputs: inputs,
+            prefix: prefix,
+            outputDirectories: directories
+        )
+    }
+
+    func createRenamedCopies(inputs: [URL], prefix: String) {
+        guard !isConverting, !isRunningUtility, activeEngineAction == nil else { return }
+        let plan: [BatchRenameTarget]
+        do {
+            plan = try batchRenamePlan(inputs: inputs, prefix: prefix)
+        } catch {
+            lastError = error.localizedDescription
+            conversionMessage = "Review the selected files and name prefix."
+            return
+        }
+
+        let currentSettings = settings
+        let utilityToken = CancellationToken()
+        utilityCancellation = utilityToken
+        isRunningUtility = true
+        isRunningUtilityCancellable = true
+        progress = 0
+        currentFileName = nil
+        conversionMessage = "Preparing renamed copies…"
+        lastError = nil
+
+        Task.detached(priority: .userInitiated) {
+            var completed: [(BatchRenameTarget, URL)] = []
+            var failures: [String] = []
+            for (index, target) in plan.enumerated() {
+                if utilityToken.isCancelled { break }
+                await MainActor.run {
+                    self.progress = Double(index) / Double(plan.count)
+                    self.currentFileName = target.inputURL.lastPathComponent
+                    self.conversionMessage = "Copying \(index + 1) of \(plan.count)"
+                }
+                do {
+                    let output = try MorphFileOperations.createRenamedCopy(target, cancellation: utilityToken)
+                    completed.append((target, output))
+                } catch let error as MorphError {
+                    if case .cancelled = error { break }
+                    failures.append("\(target.inputURL.lastPathComponent): \(error.localizedDescription)")
+                } catch {
+                    failures.append("\(target.inputURL.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+
+            let finished = completed
+            let failed = failures
+            await MainActor.run {
+                self.isRunningUtility = false
+                self.utilityCancellation = nil
+                self.isRunningUtilityCancellable = false
+                self.progress = 1
+                self.currentFileName = nil
+                if !finished.isEmpty {
+                    self.history.insert(contentsOf: finished.map { target, output in
+                        HistoryItem(
+                            id: UUID(),
+                            inputName: target.inputURL.lastPathComponent,
+                            outputPath: output.path,
+                            engineName: "Morph batch rename",
+                            date: Date()
+                        )
+                    }, at: 0)
+                    self.history = Array(self.history.prefix(200))
+                    self.saveHistory()
+                }
+
+                if utilityToken.isCancelled {
+                    self.conversionMessage = "Cancelled after creating \(finished.count) renamed cop\(finished.count == 1 ? "y" : "ies"). Originals were left unchanged."
+                } else if failed.isEmpty {
+                    self.conversionMessage = "Created \(finished.count) renamed cop\(finished.count == 1 ? "y" : "ies"). Originals were left unchanged."
+                } else {
+                    self.lastError = failed.joined(separator: "\n\n")
+                    self.conversionMessage = "Created \(finished.count) renamed copies; \(failed.count) file\(failed.count == 1 ? "" : "s") failed. Originals were left unchanged."
+                }
+                if currentSettings.revealOutputAfterConversion, !finished.isEmpty {
+                    NSWorkspace.shared.activateFileViewerSelecting(finished.map { $0.1 })
+                }
+            }
+        }
+    }
+
     private func inspectMetadata(for inputs: [URL]) {
         isRunningUtility = true
         conversionMessage = "Reading file metadata…"
@@ -855,6 +944,7 @@ final class MorphModel: ObservableObject {
 enum AppSection: String, CaseIterable, Identifiable {
     case overview = "Overview"
     case convert = "Convert"
+    case operations = "Operations"
     case history = "History"
     case engines = "Engines"
     case settings = "Settings"
@@ -865,6 +955,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .overview: "square.grid.2x2"
         case .convert: "arrow.triangle.2.circlepath"
+        case .operations: "slider.horizontal.3"
         case .history: "clock.arrow.circlepath"
         case .engines: "shippingbox"
         case .settings: "gearshape"

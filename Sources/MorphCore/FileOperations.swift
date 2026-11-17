@@ -15,6 +15,18 @@ public struct FileMetadataEntry: Identifiable, Hashable, Sendable {
     }
 }
 
+public struct BatchRenameTarget: Identifiable, Hashable, Sendable {
+    public let inputURL: URL
+    public let outputURL: URL
+
+    public var id: String { "\(inputURL.path)\u{0}\(outputURL.path)" }
+
+    public init(inputURL: URL, outputURL: URL) {
+        self.inputURL = inputURL
+        self.outputURL = outputURL
+    }
+}
+
 public enum MorphFileOperations {
     public static func inspectMetadata(_ input: URL) throws -> [FileMetadataEntry] {
         guard FileManager.default.fileExists(atPath: input.path),
@@ -131,6 +143,96 @@ public enum MorphFileOperations {
         guard CGImageDestinationFinalize(destination) else { throw MorphError.invalidOutput("macOS could not finish resizing the image.") }
         try commit(temporary, to: output)
         return output
+    }
+
+    public static func planBatchRenamedCopies(
+        inputs: [URL],
+        prefix: String,
+        outputDirectories: [URL]
+    ) throws -> [BatchRenameTarget] {
+        guard !inputs.isEmpty, inputs.count == outputDirectories.count else {
+            throw MorphError.invalidInput("Choose at least one file and a matching output folder for each file.")
+        }
+        let cleanPrefix = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasUnsafeCharacter = cleanPrefix.unicodeScalars.contains {
+            $0 == "/" || $0 == ":" || CharacterSet.controlCharacters.contains($0)
+        }
+        guard !cleanPrefix.isEmpty, cleanPrefix.count <= 48,
+              !cleanPrefix.hasPrefix("."), !cleanPrefix.hasSuffix("."),
+              !cleanPrefix.hasSuffix(" "), !hasUnsafeCharacter else {
+            throw MorphError.invalidInput("Use a prefix of 1–48 characters without slashes, colons, control characters, or a leading or trailing dot.")
+        }
+
+        var plannedPaths = Set<String>()
+        var targets: [BatchRenameTarget] = []
+        for (index, pair) in zip(inputs, outputDirectories).enumerated() {
+            let (input, outputDirectory) = pair
+            try validateRenamableFile(input)
+            guard outputDirectory.isFileURL else {
+                throw MorphError.invalidInput("The output folder must be on this Mac.")
+            }
+
+            let sequence = String(format: "%03d", index + 1)
+            let normalizedDirectory = outputDirectory.standardizedFileURL
+            var collision = 1
+            var outputURL: URL
+            while true {
+                let collisionMarker = collision == 1 ? "" : "-\(collision)"
+                let name = "\(cleanPrefix)-\(sequence)\(collisionMarker)-\(input.lastPathComponent)"
+                guard name.utf8.count <= 240 else {
+                    throw MorphError.invalidInput("‘\(input.lastPathComponent)’ is too long to add the rename prefix safely.")
+                }
+                outputURL = normalizedDirectory.appendingPathComponent(name, isDirectory: false)
+                let key = collisionKey(outputURL)
+                if !FileManager.default.fileExists(atPath: outputURL.path), plannedPaths.insert(key).inserted {
+                    break
+                }
+                collision += 1
+            }
+            targets.append(BatchRenameTarget(inputURL: input, outputURL: outputURL))
+        }
+        return targets
+    }
+
+    @discardableResult
+    public static func createRenamedCopy(
+        _ target: BatchRenameTarget,
+        cancellation: CancellationToken? = nil
+    ) throws -> URL {
+        guard cancellation?.isCancelled != true else { throw MorphError.cancelled }
+        try validateRenamableFile(target.inputURL)
+        guard target.outputURL.isFileURL,
+              target.outputURL.lastPathComponent != ".",
+              target.outputURL.lastPathComponent != "..",
+              target.outputURL.deletingLastPathComponent().standardizedFileURL.path == target.outputURL.deletingLastPathComponent().path else {
+            throw MorphError.invalidOutput("Morph could not use the planned output path.")
+        }
+        guard collisionKey(target.inputURL) != collisionKey(target.outputURL) else {
+            throw MorphError.invalidOutput("Morph will not copy a file over its original.")
+        }
+
+        let manager = FileManager.default
+        let directory = target.outputURL.deletingLastPathComponent()
+        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        guard !manager.fileExists(atPath: target.outputURL.path) else {
+            throw MorphError.processFailed("‘\(target.outputURL.lastPathComponent)’ already exists. Review the preview and try again.")
+        }
+
+        let staging = directory.appendingPathComponent(".morph-rename-\(UUID().uuidString).partial")
+        defer { try? manager.removeItem(at: staging) }
+        do {
+            try manager.copyItem(at: target.inputURL, to: staging)
+        } catch {
+            throw MorphError.processFailed("Morph could not copy ‘\(target.inputURL.lastPathComponent)’: \(error.localizedDescription)")
+        }
+        guard cancellation?.isCancelled != true else { throw MorphError.cancelled }
+        let sourceSize = (try manager.attributesOfItem(atPath: target.inputURL.path)[.size] as? NSNumber)?.int64Value
+        let stagedSize = (try manager.attributesOfItem(atPath: staging.path)[.size] as? NSNumber)?.int64Value
+        guard sourceSize == stagedSize else {
+            throw MorphError.invalidOutput("The renamed copy did not match the source file size.")
+        }
+        try commit(staging, to: target.outputURL)
+        return target.outputURL
     }
 
     @discardableResult
@@ -403,6 +505,18 @@ public enum MorphFileOperations {
                 throw MorphError.invalidInput("The archive contains a link that escapes its extraction folder.")
             }
         }
+    }
+
+    private static func validateRenamableFile(_ input: URL) throws {
+        guard input.isFileURL,
+              let attributes = try? FileManager.default.attributesOfItem(atPath: input.path),
+              attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw MorphError.invalidInput("‘\(input.lastPathComponent)’ is not an available regular file.")
+        }
+    }
+
+    private static func collisionKey(_ url: URL) -> String {
+        url.standardizedFileURL.path.precomposedStringWithCanonicalMapping.lowercased(with: Locale(identifier: "en_US_POSIX"))
     }
 
     private static func mediaDuration(_ input: URL, ffprobe: URL, cancellation: CancellationToken?) throws -> Double {

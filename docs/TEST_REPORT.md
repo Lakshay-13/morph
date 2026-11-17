@@ -5,7 +5,7 @@
 **Run date:** 2026-11-18
 
 **Command:** `Scripts/run-checks.sh` with SwiftPM using the selected Xcode 27 toolchain
-**Result:** 19 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs, PDF page-range extraction, PDF compression and video trimming were executed with real generated files.
+**Result:** 20 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs, PDF page-range extraction, PDF compression, video trimming and batch rename copies were executed with real generated files.
 
 The harness checks that each conversion output exists and is non-empty, runs `OutputValidator`, verifies the generated content or media properties where practical, and checks SHA-256 of the original file before and after conversion. Fixtures are generated locally; no network service is used for conversion.
 
@@ -60,7 +60,9 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | Cancellation | Passed; cancelled child process stopped within the 3-second test limit. |
 | Large image | Passed; converted a locally generated 2048 × 2048 noisy PNG larger than 12 MB and kept the source unchanged. |
 | Conversion staging cleanup | Passed; no `.morph-*.staging` directory or `.partial` file remained after PNG → ICO or after failed/fallback engine attempts. |
+| Batch rename copies | Passed; previewed numbered names across inputs from different folders, preserved the full `.tar.gz` suffix, resolved an existing destination collision, copied exact file contents, rejected unsafe prefixes and symbolic-link inputs, preserved originals and existing outputs, and removed staging files. |
 | Installed app and Finder integration | Passed; installed Morph 0.1.0 at `~/Applications/Morph.app` is universal (`arm64 x86_64`). Finder's right-click Quick Actions submenu displayed **Convert with Morph**; invoking it on a selected PDF imported that exact file into Morph. Finder Services and the installed Automator workflow CLI also imported selected files and consumed their temporary manifests. |
+| Installed Operations screen | Passed; refreshed and launched the installed universal 0.1.0 app, opened the Operations page, and opened then cancelled its native multi-file picker. Batch-copy execution itself was validated by the automated core harness rather than through the installed UI. |
 | Installed app conversion | Passed; the installed 0.1.0 app converted the Finder fixture PNG to JPEG through its UI. `sips` identified a non-empty 1254 × 1254 JPEG; the original PNG SHA-256 remained `dec0374ba45276a3c08ac50fb11f3569ecca20198741eff419d5eaa3dd6c31a0`. |
 | Installed conversion presets | Passed live in the installed app. With a PNG selected, the Presets menu showed Images to JPEG and Images to WebP · 80%; unavailable video, audio and document presets were absent. Selecting WebP converted the sample to a valid 1254 × 1254 WebP (150,032 bytes); the input SHA-256 remained `dec0374ba45276a3c08ac50fb11f3569ecca20198741eff419d5eaa3dd6c31a0`. |
 | Installed metadata inspection | Passed live in the updated 0.1.0 app. The installed Finder workflow imported `Morph-metadata-smoke.png`; the inspector displayed its PNG format, 1.6 MB size, 1254 × 1254 dimensions and RGB color model. The source file remained unchanged. |

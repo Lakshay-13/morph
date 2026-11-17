@@ -68,6 +68,7 @@ struct AppRootView: View {
                 switch model.selectedSection {
                 case .overview: OverviewView()
                 case .convert: ConvertView()
+                case .operations: OperationsView()
                 case .history: HistoryView()
                 case .engines: EnginesView()
                 case .settings: SettingsView()
@@ -416,6 +417,173 @@ struct ConvertView: View {
         case "zip", "7z", "gz", "xz", "bz2": "archivebox"
         default: "doc"
         }
+    }
+}
+
+struct OperationsView: View {
+    @EnvironmentObject private var model: MorphModel
+    @State private var files: [URL] = []
+    @State private var prefix = "Renamed"
+
+    private var previewTargets: [BatchRenameTarget] {
+        (try? model.batchRenamePlan(inputs: files, prefix: prefix)) ?? []
+    }
+
+    private var planError: String? {
+        guard !files.isEmpty else { return nil }
+        do {
+            _ = try model.batchRenamePlan(inputs: files, prefix: prefix)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("File operations").font(.largeTitle.bold())
+                    Text("Create renamed copies without changing the originals.")
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Batch rename copies").font(.title2.weight(.semibold))
+                            Text("Morph adds a numbered prefix and keeps each full filename, including compound extensions.")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            chooseFiles()
+                        } label: {
+                            Label("Choose Files", systemImage: "plus")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("operations.choose-files")
+                    }
+
+                    TextField("Name prefix", text: $prefix)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 320)
+                        .accessibilityIdentifier("operations.rename-prefix")
+
+                    if files.isEmpty {
+                        ContentUnavailableView(
+                            "No files selected",
+                            systemImage: "text.line.first.and.arrowtriangle.forward",
+                            description: Text("Choose one or more files to preview numbered renamed copies.")
+                        )
+                        .frame(minHeight: 160)
+                    } else {
+                        HStack {
+                            Text("Files (\(files.count))").font(.headline)
+                            Spacer()
+                            Button("Clear") { files = [] }
+                                .buttonStyle(.plain).foregroundStyle(.secondary)
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(Array(previewTargets.prefix(8))) { target in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(target.outputURL.lastPathComponent)
+                                        .font(.callout.weight(.medium)).lineLimit(1)
+                                    Text(target.outputURL.deletingLastPathComponent().path)
+                                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(10)
+                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                            }
+                            if files.count > 8 {
+                                Text("And \(files.count - 8) more…")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
+                    if let planError {
+                        Label(planError, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                    }
+
+                    Text(outputLocationDescription)
+                        .font(.caption).foregroundStyle(.secondary)
+
+                    if model.isRunningUtility {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text(model.conversionMessage ?? "Creating renamed copies…")
+                                    .font(.subheadline.weight(.medium))
+                                Spacer()
+                                if model.isRunningUtilityCancellable {
+                                    Button("Cancel") { model.cancelUtility() }.buttonStyle(.bordered)
+                                }
+                            }
+                            ProgressView(value: model.progress)
+                            if let current = model.currentFileName {
+                                Text(current).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(14)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    } else if let message = model.conversionMessage {
+                        Label(message, systemImage: model.lastError == nil ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(model.lastError == nil ? Color.green : Color.orange)
+                    }
+
+                    if let error = model.lastError {
+                        Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                    }
+
+                    HStack {
+                        Label("Originals are preserved", systemImage: "lock.shield")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button {
+                            model.createRenamedCopies(inputs: files, prefix: prefix)
+                        } label: {
+                            Label("Create renamed copies", systemImage: "doc.on.doc")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("operations.create-renamed-copies")
+                        .disabled(previewTargets.isEmpty || model.isRunningUtility || model.isConverting || model.activeEngineAction != nil)
+                    }
+                }
+                .padding(20)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+            }
+            .padding(30)
+            .frame(maxWidth: 1000, alignment: .leading)
+        }
+    }
+
+    private var outputLocationDescription: String {
+        switch model.settings.outputMode {
+        case .alongsideOriginal:
+            "Copies are saved beside each original file."
+        case .morphFolder:
+            "Copies are saved in Documents/Morph Output."
+        case .custom:
+            if let path = model.settings.customOutputPath {
+                "Copies are saved in \(path)."
+            } else {
+                "No custom folder is selected; copies are saved beside each original."
+            }
+        }
+    }
+
+    private func chooseFiles() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose files to rename"
+        panel.prompt = "Add Files"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        if panel.runModal() == .OK { files = panel.urls }
     }
 }
 

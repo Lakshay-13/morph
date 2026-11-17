@@ -39,6 +39,7 @@ final class MorphCheckSuite {
         test("PDF page-range extraction") { try checkPDFPageRangeExtraction($0) }
         test("image and PDF metadata inspection") { try checkMetadataInspection($0) }
         test("mixed batch, collisions, and source preservation") { try checkBatchAndCollisions($0) }
+        test("batch rename copies preserve sources and avoid collisions") { try checkBatchRename($0) }
         test("invalid input and partial-output cleanup") { try checkInvalidInput($0) }
         test("missing engine is reported before work starts") { try checkMissingEngine($0) }
         test("engine fallback and temporary cleanup") { try checkEngineFallback($0) }
@@ -453,6 +454,119 @@ final class MorphCheckSuite {
         try expect(resultA.lastPathComponent == "same-2.jpg", "First collision was not renamed safely")
         try expect(resultB.lastPathComponent == "same-3.jpg", "Second collision was not renamed safely")
         try expect(try sha256(first) == firstHash && sha256(second) == secondHash, "Batch conversion changed an original")
+    }
+
+    private func checkBatchRename(_ folder: URL) throws {
+        let firstFolder = folder.appendingPathComponent("first", isDirectory: true)
+        let secondFolder = folder.appendingPathComponent("second", isDirectory: true)
+        let output = folder.appendingPathComponent("output", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+
+        let first = firstFolder.appendingPathComponent("photo.png")
+        let second = secondFolder.appendingPathComponent("photo.png")
+        let archive = firstFolder.appendingPathComponent("bundle.tar.gz")
+        try Data("first photo".utf8).write(to: first)
+        try Data("second photo".utf8).write(to: second)
+        try Data("archive bytes".utf8).write(to: archive)
+        let sources = [first, second, archive]
+        let sourceHashes = try sources.map(sha256)
+
+        let existing = output.appendingPathComponent("Trip-001-photo.png")
+        try Data("keep existing output".utf8).write(to: existing)
+        let targets = try MorphFileOperations.planBatchRenamedCopies(
+            inputs: sources,
+            prefix: "Trip",
+            outputDirectories: Array(repeating: output, count: sources.count)
+        )
+        try expect(targets.map { $0.outputURL.lastPathComponent } == [
+            "Trip-001-2-photo.png",
+            "Trip-002-photo.png",
+            "Trip-003-bundle.tar.gz",
+        ], "Batch rename preview did not preserve full filenames or resolve an existing collision")
+
+        let copies = try targets.map { try MorphFileOperations.createRenamedCopy($0) }
+        try expect(copies.allSatisfy { FileManager.default.fileExists(atPath: $0.path) }, "A renamed copy is missing")
+        try expect(try zip(copies, sources).allSatisfy { try sha256($0.0) == sha256($0.1) }, "A renamed copy did not preserve source bytes")
+        try expect(try sources.map(sha256) == sourceHashes, "Batch rename changed an original")
+        try expect(try String(contentsOf: existing, encoding: .utf8) == "keep existing output", "Batch rename replaced an existing destination")
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: output.path)
+            .filter { $0.hasPrefix(".morph-rename-") || $0.hasSuffix(".partial") }
+        try expect(leftovers.isEmpty, "Batch rename left staging files behind")
+
+        do {
+            _ = try MorphFileOperations.planBatchRenamedCopies(
+                inputs: sources,
+                prefix: "../escape",
+                outputDirectories: Array(repeating: output, count: sources.count)
+            )
+            throw CheckFailure("An unsafe batch rename prefix was accepted")
+        } catch is CheckFailure {
+            throw CheckFailure("An unsafe batch rename prefix was accepted")
+        } catch {
+            try expect(try sources.map(sha256) == sourceHashes, "Invalid rename input changed a source")
+        }
+
+        let lateCollisionTarget = try MorphFileOperations.planBatchRenamedCopies(
+            inputs: [first],
+            prefix: "Late",
+            outputDirectories: [output]
+        )[0]
+        try Data("arrived after preview".utf8).write(to: lateCollisionTarget.outputURL)
+        do {
+            _ = try MorphFileOperations.createRenamedCopy(lateCollisionTarget)
+            throw CheckFailure("Batch rename replaced an output created after preview")
+        } catch is CheckFailure {
+            throw CheckFailure("Batch rename replaced an output created after preview")
+        } catch {
+            try expect(try String(contentsOf: lateCollisionTarget.outputURL, encoding: .utf8) == "arrived after preview", "A late collision was overwritten")
+        }
+
+        do {
+            _ = try MorphFileOperations.createRenamedCopy(BatchRenameTarget(inputURL: first, outputURL: first))
+            throw CheckFailure("Batch rename accepted the source path as its output")
+        } catch is CheckFailure {
+            throw CheckFailure("Batch rename accepted the source path as its output")
+        } catch {
+            try expect(try sha256(first) == sourceHashes[0], "Refusing an output-over-source target changed the source")
+        }
+
+        let cancelledTarget = try MorphFileOperations.planBatchRenamedCopies(
+            inputs: [first],
+            prefix: "Cancelled",
+            outputDirectories: [output]
+        )[0]
+        let cancelled = CancellationToken()
+        cancelled.cancel()
+        do {
+            _ = try MorphFileOperations.createRenamedCopy(cancelledTarget, cancellation: cancelled)
+            throw CheckFailure("A cancelled batch rename created an output")
+        } catch MorphError.cancelled {
+            try expect(!FileManager.default.fileExists(atPath: cancelledTarget.outputURL.path), "Cancelled rename left an output")
+        } catch is CheckFailure {
+            throw CheckFailure("A cancelled batch rename created an output")
+        } catch {
+            throw CheckFailure("Cancellation returned an unexpected error: \(error.localizedDescription)")
+        }
+
+        let symbolicLink = folder.appendingPathComponent("linked-photo.png")
+        try FileManager.default.createSymbolicLink(at: symbolicLink, withDestinationURL: first)
+        do {
+            _ = try MorphFileOperations.planBatchRenamedCopies(
+                inputs: [symbolicLink],
+                prefix: "Trip",
+                outputDirectories: [output]
+            )
+            throw CheckFailure("A symbolic-link input was accepted for batch rename")
+        } catch is CheckFailure {
+            throw CheckFailure("A symbolic-link input was accepted for batch rename")
+        } catch { }
+
+        try expect(try sources.map(sha256) == sourceHashes, "A failed or cancelled rename changed an original")
+        let remainingStaging = try FileManager.default.contentsOfDirectory(atPath: output.path)
+            .filter { $0.hasPrefix(".morph-rename-") || $0.hasSuffix(".partial") }
+        try expect(remainingStaging.isEmpty, "A failed or cancelled rename left staging files")
     }
 
     private func checkMetadataInspection(_ folder: URL) throws {
