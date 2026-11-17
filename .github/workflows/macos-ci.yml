@@ -61,6 +61,11 @@ jobs:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Audit the Homebrew Cask draft
+        run: |
+          brew audit --cask distribution/homebrew/morph.rb
+          brew style --cask distribution/homebrew/morph.rb
+
       - name: Build package
         run: MORPH_VERSION=0.1.0 MORPH_DIST_DIR="$RUNNER_TEMP/morph-dist" Scripts/package-release.sh
 
