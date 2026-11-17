@@ -7,7 +7,7 @@ cask "morph" do
 
   url "https://github.com/Lakshay-13/morph/releases/download/v#{version}/Morph-#{version}-macOS-universal.zip"
   name "Morph"
-  desc "Native macOS file conversion and transformation utility"
+  desc "Native file conversion and transformation utility"
   homepage "https://github.com/Lakshay-13/morph"
 
   depends_on macos: ">= :sonoma"
