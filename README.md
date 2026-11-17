@@ -4,6 +4,8 @@ Morph is a native SwiftUI macOS utility for converting and transforming files wi
 
 ![Morph app icon](morph-logo.png)
 
+![Morph overview running on macOS 26](docs/screenshots/morph-overview.png)
+
 ## What works today
 
 - Finder Quick Action: right-click a file, choose **Quick Actions → Convert with Morph**, then choose an available format in Morph.
@@ -15,6 +17,7 @@ Morph is a native SwiftUI macOS utility for converting and transforming files wi
 - Output beside the source, in `~/Documents/Morph Output`, or in a chosen folder. Existing files are never replaced.
 - Local conversion history, progress, cancellation for conversions, and optional Finder reveal after completion.
 - An engine manager that requires an explicit confirmation before installing, updating or uninstalling Homebrew formulas.
+- A native Liquid Glass primary action on macOS 26 and later, with a bordered-button fallback on macOS 14–25.
 
 ## Finder workflow
 

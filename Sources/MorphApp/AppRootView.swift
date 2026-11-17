@@ -101,13 +101,7 @@ struct AppRootView: View {
     }
 
     private func openFiles() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose files for Morph"
-        panel.prompt = "Add Files"
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = true
-        if panel.runModal() == .OK { model.importFiles(panel.urls) }
+        chooseFiles(for: model)
     }
 
     private func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -128,6 +122,17 @@ struct AppRootView: View {
         }
         return true
     }
+}
+
+@MainActor
+private func chooseFiles(for model: MorphModel) {
+    let panel = NSOpenPanel()
+    panel.title = "Choose files for Morph"
+    panel.prompt = "Add Files"
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = false
+    panel.allowsMultipleSelection = true
+    if panel.runModal() == .OK { model.importFiles(panel.urls) }
 }
 
 private final class URLCollector: @unchecked Sendable {
@@ -166,10 +171,9 @@ struct OverviewView: View {
                             Text("Choose files or drop them anywhere in this window.").foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button { model.selectedSection = .convert } label: {
-                            Label("Choose Files", systemImage: "plus")
+                        AdaptiveProminentButton(title: "Choose Files", systemImage: "plus") {
+                            chooseFiles(for: model)
                         }
-                        .buttonStyle(.borderedProminent)
                     }
                     HStack(spacing: 12) {
                         CapabilityPill("Images", symbol: "photo")
@@ -195,6 +199,29 @@ struct OverviewView: View {
             }
             .padding(30)
             .frame(maxWidth: 1000, alignment: .leading)
+        }
+    }
+}
+
+private struct AdaptiveProminentButton: View {
+    let title: String
+    let systemImage: String
+    let action: () -> Void
+
+    @ViewBuilder
+    var body: some View {
+        if #available(macOS 26.0, *) {
+            Button(action: action) {
+                Label(title, systemImage: systemImage)
+            }
+            .buttonStyle(.glassProminent)
+            .accessibilityIdentifier("overview.choose-files")
+        } else {
+            Button(action: action) {
+                Label(title, systemImage: systemImage)
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityIdentifier("overview.choose-files")
         }
     }
 }
@@ -605,7 +632,7 @@ struct SettingsView: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Appearance").font(.headline)
-                    Text("Morph follows your macOS appearance and accessibility settings. Standard macOS controls provide the current system material and motion behavior.")
+                    Text("Morph follows your macOS appearance. On macOS 26 and later, the main Choose Files action uses Liquid Glass; older supported versions use a bordered button. Native controls and materials adapt to accessibility settings.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 .padding(18).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15))

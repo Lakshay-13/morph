@@ -10,11 +10,11 @@ MORPH_VERSION=0.1.0 MORPH_DIST_DIR="$PWD/release-output" Scripts/package-release
 
 The ZIP contains `Morph.app` and the Finder Quick Action workflow at its root. The ZIP is ignored by Git. Keep the exact tested archive and its checksum together. Do not publish the current ad-hoc build.
 
-The latest local package is `.build/release-artifacts-v8/Morph-0.1.0-macOS-universal.zip` (arm64 + x86_64), SHA-256 `4dfeecef90548c76f0829287c071ca5655cfddf3b301e7c2ac5545b1b29a9b40`. It is a local validation artifact, not a GitHub release; it is ad-hoc signed and must not be used for the public Cask.
+The latest local package is `.build/release-artifacts-v9/Morph-0.1.0-macOS-universal.zip` (arm64 + x86_64), SHA-256 `dd3049a2c65329a0d9c816cfabe335f99f3d9c42cbb6cb8d0d44fd714d6d9e96`. Its ZIP integrity and checksum were verified. It is a local validation artifact, not a GitHub release; it is ad-hoc signed and must not be used for the public Cask. The draft Cask's SHA is only a local placeholder and must be replaced by the final signed/notarized archive's checksum.
 
 ## Developer ID signing and notarization
 
-Current machine status (2026-11-18): Xcode 27.0 is selected and its license is accepted, but Xcode has no developer account signed in. There are zero valid code-signing identities and no `morph-notary` Keychain profile. Homebrew's audit also reports the standalone Command Line Tools package as 15.4 and requires 26.3 or newer.
+Current machine status (2026-11-18): Xcode 27.0 is selected and its license is accepted, but Xcode has no developer account signed in. There are zero valid code-signing identities and no `morph-notary` Keychain profile. Homebrew's audit also reports the standalone Command Line Tools package as 15.4 and requires 26.3 or newer. Software Update did not offer a Command Line Tools update; install a current package from Apple Developer Downloads to unblock the audit.
 
 Before public distribution:
 

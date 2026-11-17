@@ -1,10 +1,10 @@
 # Test report
 
-**Run on:** macOS 26.6.2, Apple M3 Max (arm64)
+**Run on:** macOS 26.6.2, Apple M3 Max (arm64), Xcode 27.0 / Swift 6.4
 
-**Run date:** 2026-11-17
+**Run date:** 2026-11-18
 
-**Command:** `Scripts/run-checks.sh` with SwiftPM using the installed Command Line Tools
+**Command:** `Scripts/run-checks.sh` with SwiftPM using the selected Xcode 27 toolchain
 **Result:** 14 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs and one PDF compression operation were executed with real generated files.
 
 The harness checks that each conversion output exists and is non-empty, runs `OutputValidator`, verifies the generated content or media properties where practical, and checks SHA-256 of the original file before and after conversion. Fixtures are generated locally; no network service is used for conversion.
@@ -58,11 +58,13 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | Installed app conversion | Passed; the installed 0.1.0 app converted the Finder fixture PNG to JPEG through its UI. `sips` identified a non-empty 1254 × 1254 JPEG; the original PNG SHA-256 remained `dec0374ba45276a3c08ac50fb11f3569ecca20198741eff419d5eaa3dd6c31a0`. |
 | Installed PDF compression | Passed end to end from Finder's right-click Quick Actions menu: Morph imported the selected PDF, and **Compress PDF** produced a separate valid one-page PDF (276,382 bytes from a 1,452,001-byte source). `pdfinfo` validated the output; the original remained present at its original size. |
 | Sidebar and engine manager UI | Passed; all five sidebar buttons navigate, and the Engines page showed the detected engine versions and routes. |
+| Liquid Glass primary action and file picker | Passed on macOS 26.6.2; the installed universal app launched with its prominent system button style. Clicking **Choose Files** opened the native multi-file picker; Escape cancelled and returned to the overview. The macOS 14–25 bordered-button fallback compiled but was not runtime-tested on an older macOS version. Screenshot: [`morph-overview.png`](screenshots/morph-overview.png). |
+| Universal release package | Passed; built arm64 + x86_64 app, `unzip -t` reported no archive errors, and `shasum -a 256 -c` verified the package hash. The package is ad-hoc signed and not eligible for public distribution. |
 | Dependency consent cancellation | Passed; the live **Uninstall FFmpeg?** confirmation was opened and cancelled. Morph continued to show FFmpeg installed, and no Homebrew install, uninstall or upgrade process ran. No package was installed or removed. |
 
 ## Limitations of this run
 
-- The harness is a self-contained SwiftPM executable rather than XCTest. SwiftPM emits a non-fatal XCTest path warning because the selected Command Line Tools SDK cannot answer `xcrun --show-sdk-platform-path`; the executable and all 14 groups still build and run.
+- The harness is a self-contained SwiftPM executable rather than XCTest.
 - CoreGraphics emits a PDF diagnostic during fixture/PDF processing. PDFKit and Poppler checks still pass, and generated PDFs reopened with the expected page count/content.
 - Cancellation was tested at the process-runner layer and the dependency consent Cancel button was exercised live. Finder context-menu conversion was tested end to end on a generated PDF; mixed selections and other Finder application contexts were not exhaustively exercised.
 - Archive traversal rejection is implemented, but this run exercised safe ZIP extraction rather than a malicious traversal ZIP fixture.
