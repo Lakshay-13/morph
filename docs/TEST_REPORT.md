@@ -5,7 +5,7 @@
 **Run date:** 2026-11-18
 
 **Command:** `Scripts/run-checks.sh` with SwiftPM using the selected Xcode 27 toolchain
-**Result:** 18 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs, PDF page-range extraction, PDF compression and video trimming were executed with real generated files.
+**Result:** 19 automated groups passed, 0 failed, 0 skipped. Twenty-three distinct input/output format pairs, PDF page-range extraction, PDF compression and video trimming were executed with real generated files.
 
 The harness checks that each conversion output exists and is non-empty, runs `OutputValidator`, verifies the generated content or media properties where practical, and checks SHA-256 of the original file before and after conversion. Fixtures are generated locally; no network service is used for conversion.
 
@@ -52,6 +52,7 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 | Video trim range validation | Passed; accepted a finite, non-negative start and later end, rejected negative, equal, descending and non-finite ranges, and rejected an end beyond the source duration without leaving output files. |
 | LibreOffice route family constraints | Passed; DOCX, PPTX and XLSX each expose PDF export, while document ↔ spreadsheet and presentation → spreadsheet routes are not advertised. |
 | ZIP extraction | Passed; extracted file content matched, ZIP checksum unchanged. |
+| ZIP traversal and symlink rejection | Passed; Info-ZIP fixtures containing `../outside.txt` and a symlink to an outside file were rejected. No traversal output directory or symlink-extracted content remained, and the outside target checksum was unchanged. |
 | Image/PDF metadata inspection | Passed; ImageIO reported PNG dimensions and file size; PDFKit reported page count, title and author. Source checksums stayed unchanged. Invalid image metadata was rejected without modifying the file. |
 | Invalid image input | Passed; conversion failed, original remained unchanged, no partial output remained. |
 | Missing FFmpeg route | Passed; reported the missing engine before creating an output directory. |
@@ -76,7 +77,7 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 - The harness is a self-contained SwiftPM executable rather than XCTest.
 - CoreGraphics emits a PDF diagnostic during fixture/PDF processing. PDFKit and Poppler checks still pass, and generated PDFs reopened with the expected page count/content.
 - Cancellation was tested at the process-runner layer and the dependency consent Cancel button was exercised live. Finder context-menu conversion was tested end to end on a generated PDF; mixed selections and other Finder application contexts were not exhaustively exercised.
-- Archive traversal rejection is implemented, but this run exercised safe ZIP extraction rather than a malicious traversal ZIP fixture.
+- Malicious ZIP validation covered parent traversal and one escaping symlink fixture. Decompression-bomb resource limits and a broader hostile archive corpus remain untested.
 - The app and all real conversions were executed on Apple Silicon. An Intel runtime was not available for validation.
 - The Homebrew Cask draft passes Ruby syntax validation. After updating Homebrew to 7.0.14, `brew audit --cask distribution/homebrew/morph.rb` failed because the installed standalone Command Line Tools 15.4 do not support macOS 26; Homebrew requests Command Line Tools for Xcode 27.0. `softwareupdate --list` offered no CLT package, and `xcode-select --install` reported that tools are already installed. Cask audit/install checks are therefore unverified. The local release archive is ad-hoc signed and is not eligible for public Cask submission.
 - `brew style --cask distribution/homebrew/morph.rb` exited 1 with only Homebrew's developer-mode notice and no diagnostic, so Cask style is unverified. Homebrew developer mode was restored to disabled afterward.

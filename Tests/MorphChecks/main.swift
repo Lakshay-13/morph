@@ -34,6 +34,7 @@ final class MorphCheckSuite {
         test("PDF compression with Ghostscript") { try checkPDFCompression($0) }
         test("structured data") { try checkStructuredData($0) }
         test("archive repackaging") { try checkArchives($0) }
+        test("archive traversal and symlink rejection") { try checkArchiveTraversal($0) }
         test("image resize, PDF pages, and ZIP extraction") { try checkFileOperations($0) }
         test("PDF page-range extraction") { try checkPDFPageRangeExtraction($0) }
         test("image and PDF metadata inspection") { try checkMetadataInspection($0) }
@@ -333,6 +334,63 @@ final class MorphCheckSuite {
         let listing = try ProcessRunner.run(executable: unzip, arguments: ["-Z1", roundTripZip.path])
         try expect(listing.status == 0 && listing.stdout.contains("payload.txt"), "Repacked ZIP is missing its member")
         try expect(try sha256(zip) == zipHash, "Source ZIP changed")
+    }
+
+    private func checkArchiveTraversal(_ folder: URL) throws {
+        guard let zipTool = ExecutableLocator.resolve(["zip"]),
+              let unzip = ExecutableLocator.resolve(["unzip"]) else {
+            throw CheckSkip("ZIP tools are unavailable")
+        }
+        let archiveSource = folder.appendingPathComponent("archive-source", isDirectory: true)
+        try FileManager.default.createDirectory(at: archiveSource, withIntermediateDirectories: true)
+        let outside = folder.appendingPathComponent("outside.txt")
+        try "outside file remains untouched".write(to: outside, atomically: true, encoding: .utf8)
+        let outsideHash = try sha256(outside)
+
+        let traversalArchive = folder.appendingPathComponent("path-traversal.zip")
+        let traversalFixture = try ProcessRunner.run(
+            executable: zipTool,
+            arguments: ["-q", traversalArchive.path, "../outside.txt"],
+            currentDirectory: archiveSource
+        )
+        try expect(traversalFixture.status == 0, "Could not create traversal ZIP fixture: \(traversalFixture.stderr)")
+        let traversalListing = try ProcessRunner.run(executable: unzip, arguments: ["-Z1", traversalArchive.path])
+        try expect(traversalListing.status == 0 && traversalListing.stdout.contains("../outside.txt"), "Traversal ZIP fixture does not contain its unsafe path")
+        let traversalOutput = folder.appendingPathComponent("traversal-output", isDirectory: true)
+        try expectZIPExtractionRejected(traversalArchive, outputDirectory: traversalOutput, message: "ZIP extraction accepted a parent-traversal path")
+        try expect(!FileManager.default.fileExists(atPath: traversalOutput.path), "Rejected traversal archive created an output directory")
+        try expect(try sha256(outside) == outsideHash, "Rejected traversal archive changed a file outside its output")
+
+        let link = archiveSource.appendingPathComponent("escape-link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        let linkArchive = folder.appendingPathComponent("symlink-escape.zip")
+        let linkFixture = try ProcessRunner.run(
+            executable: zipTool,
+            arguments: ["-qy", linkArchive.path, "escape-link"],
+            currentDirectory: archiveSource
+        )
+        try expect(linkFixture.status == 0, "Could not create symlink ZIP fixture: \(linkFixture.stderr)")
+        let linkListing = try ProcessRunner.run(executable: unzip, arguments: ["-Z1", linkArchive.path])
+        try expect(linkListing.status == 0 && linkListing.stdout.contains("escape-link"), "Symlink ZIP fixture is missing its link")
+        let linkOutput = folder.appendingPathComponent("symlink-output", isDirectory: true)
+        try expectZIPExtractionRejected(linkArchive, outputDirectory: linkOutput, message: "ZIP extraction accepted a link that escapes its output folder")
+        try expect(try FileManager.default.contentsOfDirectory(atPath: linkOutput.path).isEmpty, "Rejected symlink archive left extracted content")
+        try expect(try sha256(outside) == outsideHash, "Rejected symlink archive changed its target")
+    }
+
+    private func expectZIPExtractionRejected(_ archive: URL, outputDirectory: URL, message: String) throws {
+        do {
+            _ = try MorphFileOperations.extractZIP(archive, outputDirectory: outputDirectory)
+            throw CheckFailure(message)
+        } catch let failure as CheckFailure {
+            throw failure
+        } catch let error as MorphError {
+            guard case .invalidInput = error else {
+                throw CheckFailure("ZIP extraction failed for an unexpected reason: \(error.localizedDescription)")
+            }
+        } catch {
+            throw CheckFailure("ZIP extraction failed for an unexpected reason: \(error.localizedDescription)")
+        }
     }
 
     private func checkFileOperations(_ folder: URL) throws {

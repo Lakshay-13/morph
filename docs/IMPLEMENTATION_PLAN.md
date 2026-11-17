@@ -28,7 +28,7 @@
 
 ## Validation and release gates
 
-- The self-contained SwiftPM harness currently runs 18 groups, covering 23 distinct format pairs plus PDF page-range extraction, PDF compression and video trimming, image/PDF metadata inspection, route-aware conversion presets, real engine conversions, safe outputs, source checksums, collision handling, invalid input, missing engines, fallback, cancellation, office-route family constraints and a large image. See `TEST_REPORT.md`.
+- The self-contained SwiftPM harness currently runs 19 groups, covering 23 distinct format pairs plus PDF page-range extraction, PDF compression and video trimming, malicious ZIP path/symlink rejection, image/PDF metadata inspection, route-aware conversion presets, real engine conversions, safe outputs, source checksums, collision handling, invalid input, missing engines, fallback, cancellation, office-route family constraints and a large image. See `TEST_REPORT.md`.
 - Cover mixed and batch inputs, unsupported/missing engines, failed and invalid inputs, collisions, cancellation, cleanup and large inputs where practical.
 - A universal binary is not considered validated on Intel without an Intel runtime check. Record architecture coverage honestly.
 - The Finder right-click Quick Actions submenu displays the Morph action; a selected PDF was imported and compressed end to end through the actual context menu. Finder Services and the installed Automator workflow also imported selected files; the installed app completed PNG → JPEG, WebP preset conversion, PDF compression, page-range extraction, image metadata inspection and video trimming. The live dependency confirmation was opened and cancelled; an install was not approved or run.
