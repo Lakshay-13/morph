@@ -4,7 +4,7 @@ import CryptoKit
 import Darwin
 import Foundation
 import ImageIO
-import MorphCore
+@testable import MorphCore
 import PDFKit
 
 struct CheckFailure: LocalizedError, CustomStringConvertible {
@@ -35,6 +35,8 @@ final class MorphCheckSuite {
         test("structured data") { try checkStructuredData($0) }
         test("YAML and TOML transformations") { try checkYAMLAndTOML($0) }
         test("archive repackaging") { try checkArchives($0) }
+        test("7-Zip archive conversion") { try checkSevenZip($0) }
+        test("7-Zip listing path and link rejection") { _ in try checkSevenZipListingSafety() }
         test("archive traversal and symlink rejection") { try checkArchiveTraversal($0) }
         test("image resize, PDF pages, and ZIP extraction") { try checkFileOperations($0) }
         test("PDF page-range extraction") { try checkPDFPageRangeExtraction($0) }
@@ -392,6 +394,91 @@ final class MorphCheckSuite {
         let listing = try ProcessRunner.run(executable: unzip, arguments: ["-Z1", roundTripZip.path])
         try expect(listing.status == 0 && listing.stdout.contains("payload.txt"), "Repacked ZIP is missing its member")
         try expect(try sha256(zip) == zipHash, "Source ZIP changed")
+    }
+
+    private func checkSevenZip(_ folder: URL) throws {
+        guard let sevenZipTool = ExecutableLocator.resolve(["7zz", "7z"]) else {
+            throw CheckSkip("7-Zip is not installed")
+        }
+        guard let zipTool = ExecutableLocator.resolve(["zip"]),
+              let unzip = ExecutableLocator.resolve(["unzip"]) else {
+            throw CheckSkip("ZIP tools are unavailable")
+        }
+
+        let sourceFolder = folder.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try "7-Zip keeps this archive payload intact".write(
+            to: sourceFolder.appendingPathComponent("payload.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let sourceZip = folder.appendingPathComponent("bundle.zip")
+        let created = try ProcessRunner.run(executable: zipTool, arguments: ["-qr", sourceZip.path, "."], currentDirectory: sourceFolder)
+        try expect(created.status == 0, "Could not create ZIP fixture: \(created.stderr)")
+        let sourceHash = try sha256(sourceZip)
+        let output = folder.appendingPathComponent("output", isDirectory: true)
+
+        let sevenZip = try convert(sourceZip, to: "7z", category: .archive, output: output)
+        let checked = try ProcessRunner.run(executable: sevenZipTool, arguments: ["t", sevenZip.path])
+        try expect(checked.status == 0, "Generated 7z failed integrity validation: \(checked.stderr)")
+        let roundTripZip = try convert(sevenZip, to: "zip", category: .archive, output: output)
+        let payload = try ProcessRunner.run(executable: unzip, arguments: ["-p", roundTripZip.path])
+        try expect(payload.status == 0 && payload.stdout.contains("7-Zip keeps this archive payload intact"), "7-Zip round trip lost the archive payload")
+        try expect(try sha256(sourceZip) == sourceHash, "ZIP source changed during 7-Zip conversion")
+    }
+
+    private func checkSevenZipListingSafety() throws {
+        let safeListing = """
+        Listing archive: sample.7z
+
+        ----------
+        Path = folder
+        Size = 0
+        Attributes = D
+
+        ----------
+        Path = folder/payload.txt
+        Size = 4
+        Attributes = A
+        """
+        try SevenZipArchiveEngine.validateListingText(safeListing)
+
+        let unsafeListings = [
+            """
+            ----------
+            Path = ../outside.txt
+            Size = 4
+            Attributes = A
+            """,
+            """
+            ----------
+            Path = C:\\outside.txt
+            Size = 4
+            Attributes = A
+            """,
+            """
+            ----------
+            Path = link
+            Size = 0
+            Attributes = A
+            Symbolic Link = ../../outside.txt
+            """,
+            """
+            ----------
+            Path = safe.txt
+            ../outside.txt
+            Size = 4
+            Attributes = A
+            """,
+        ]
+        for listing in unsafeListings {
+            do {
+                try SevenZipArchiveEngine.validateListingText(listing)
+                throw CheckFailure("7-Zip listing parser accepted an unsafe member")
+            } catch let error as MorphError {
+                guard case .invalidInput = error else { throw error }
+            }
+        }
     }
 
     private func checkArchiveTraversal(_ folder: URL) throws {

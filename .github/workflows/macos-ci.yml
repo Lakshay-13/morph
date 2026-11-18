@@ -46,6 +46,10 @@ jobs:
         if: matrix.arch == 'arm64'
         run: brew install --cask libreoffice
 
+      - name: Install 7-Zip for archive checks
+        if: matrix.arch == 'arm64'
+        run: brew install sevenzip
+
       - name: Build Morph
         run: swift build --product Morph
 

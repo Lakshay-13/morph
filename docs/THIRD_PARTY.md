@@ -14,10 +14,11 @@ Morph itself is licensed under Apache-2.0. Morph statically links two Swift pack
 | Pandoc | Optional document conversion | GPL-2.0-or-later upstream distribution. Not bundled. |
 | Poppler | PDF text extraction | GPL-2.0-or-later family; verify the exact package license for the installed build. Not bundled. |
 | Ghostscript | PDF compression presets | [Homebrew identifies the formula as AGPL-3.0-or-later](https://formulae.brew.sh/formula/ghostscript); [Artifex describes its AGPL and commercial license choices](https://www.ghostscript.com/faq/index.html). It is an independently installed process and is not bundled or linked into Morph; users must review the terms for their use. |
+| [7-Zip](https://www.7-zip.org/) | Optional ZIP ↔ 7z archive conversion through the `7zz` executable | Homebrew's [`sevenzip` formula](https://formulae.brew.sh/formula/sevenzip) identifies LGPL-2.1-or-later AND BSD-3-Clause. It is installed separately by the user, invoked as a process, and not bundled or linked into Morph. RAR is not advertised as a supported input. |
 | LibreOffice | Office file conversion | MPL-2.0 with additional component licenses in the upstream distribution. Not bundled. |
 | macOS `ditto`, `zip`, `unzip` and `tar` | Archive conversion/extraction | Apple/macOS system tools; not redistributed. |
 
-libvips and 7-Zip were evaluated as possible future tools. They have no current Morph conversion adapter and are not offered in the dependency UI. If an adapter is added, its version-specific formula and license details must be recorded here before release.
+libvips was evaluated as a possible future tool. It has no current Morph conversion adapter. 7-Zip supports only the ZIP ↔ 7z routes described above; additional 7-Zip formats are not advertised until their safety and conversion behavior are tested.
 
 ## Dependency pinning
 

@@ -116,6 +116,7 @@ public final class ConversionService {
         add(.imageMagick) { ImageMagickConversionEngine(executable: $0) }
         add(.pandoc) { PandocConversionEngine(executable: $0) }
         add(.poppler) { PopplerConversionEngine(executable: $0) }
+        add(.sevenZip) { SevenZipConversionEngine(executable: $0) }
         add(.libreOffice) { LibreOfficeConversionAdapter(executable: $0) }
         return adapters
     }
@@ -150,6 +151,22 @@ public struct ArchiveConversionEngine: ConversionEngine {
     public init() {}
     public func convert(context: ConversionContext) throws {
         try ArchiveEngine.convert(input: context.request.inputURL, output: context.temporaryOutputURL, cancellation: context.cancellation)
+    }
+}
+
+public struct SevenZipConversionEngine: ConversionEngine {
+    public let id: EngineID = .sevenZip
+    private let executable: URL
+
+    public init(executable: URL) { self.executable = executable }
+
+    public func convert(context: ConversionContext) throws {
+        try SevenZipArchiveEngine.convert(
+            executable: executable,
+            input: context.request.inputURL,
+            output: context.temporaryOutputURL,
+            cancellation: context.cancellation
+        )
     }
 }
 
@@ -332,33 +349,20 @@ public enum LibreOfficeEngine {
 
 public enum ArchiveEngine {
     public static func convert(input: URL, output: URL, cancellation: CancellationToken) throws {
-        guard let tar = ExecutableLocator.resolve(["tar"]),
-              let zip = ExecutableLocator.resolve(["zip"]),
-              let unzip = ExecutableLocator.resolve(["unzip"]),
-              let ditto = ExecutableLocator.resolve(["ditto"]) else {
-            throw MorphError.processFailed("Required macOS ZIP or TAR tools are unavailable.")
-        }
         let workDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("morph-archive-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: workDirectory) }
 
-        let inputExt = input.lastPathComponent.lowercased().hasSuffix(".tar.gz") || input.lastPathComponent.lowercased().hasSuffix(".tgz") ? "tar.gz" : input.pathExtension.lowercased()
-        if inputExt == "zip" {
-            let listing = try ProcessRunner.run(executable: unzip, arguments: ["-Z1", input.path], cancellation: cancellation)
-            guard listing.status == 0 else { throw MorphError.invalidInput("The ZIP directory could not be read.") }
-            try validateArchivePaths(listing.stdout)
-            let extracted = try ProcessRunner.run(executable: ditto, arguments: ["-x", "-k", input.path, workDirectory.path], cancellation: cancellation)
-            guard extracted.status == 0 else { throw MorphError.invalidInput(extracted.stderr.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        } else if inputExt == "tar.gz" {
-            let listing = try ProcessRunner.run(executable: tar, arguments: ["-tzf", input.path], cancellation: cancellation)
-            guard listing.status == 0 else { throw MorphError.invalidInput("The TAR.GZ directory could not be read.") }
-            try validateArchivePaths(listing.stdout)
-            let extracted = try ProcessRunner.run(executable: tar, arguments: ["-xzf", input.path, "-C", workDirectory.path, "--no-same-owner"], cancellation: cancellation)
-            guard extracted.status == 0 else { throw MorphError.invalidInput(extracted.stderr.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        } else {
-            throw MorphError.unsupportedConversion(input.pathExtension, output.pathExtension)
+        let inputExt = archiveExtension(for: input)
+        guard ["zip", "tar.gz"].contains(inputExt) else {
+            throw MorphError.unsupportedConversion(inputExt, output.pathExtension)
         }
-        try ensureExtractedItemsStayInside(workDirectory)
+        try extract(input: input, to: workDirectory, cancellation: cancellation)
+
+        guard let tar = ExecutableLocator.resolve(["tar"]),
+              let zip = ExecutableLocator.resolve(["zip"]) else {
+            throw MorphError.processFailed("Required macOS ZIP or TAR creation tools are unavailable.")
+        }
 
         if output.pathExtension.lowercased() == "zip" {
             let result = try ProcessRunner.run(executable: zip, arguments: ["-qr", output.path, "."], currentDirectory: workDirectory, cancellation: cancellation)
@@ -371,16 +375,52 @@ public enum ArchiveEngine {
         }
     }
 
-    private static func validateArchivePaths(_ listing: String) throws {
+    static func extract(input: URL, to directory: URL, cancellation: CancellationToken) throws {
+        let inputExt = archiveExtension(for: input)
+        if inputExt == "zip" {
+            guard let unzip = ExecutableLocator.resolve(["unzip"]),
+                  let ditto = ExecutableLocator.resolve(["ditto"]) else {
+                throw MorphError.processFailed("Required macOS ZIP extraction tools are unavailable.")
+            }
+            let listing = try ProcessRunner.run(executable: unzip, arguments: ["-Z1", input.path], cancellation: cancellation)
+            guard listing.status == 0 else { throw MorphError.invalidInput("The ZIP directory could not be read.") }
+            try validateArchivePaths(listing.stdout)
+            let extracted = try ProcessRunner.run(executable: ditto, arguments: ["-x", "-k", input.path, directory.path], cancellation: cancellation)
+            guard extracted.status == 0 else { throw MorphError.invalidInput(extracted.stderr.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        } else if inputExt == "tar.gz" {
+            guard let tar = ExecutableLocator.resolve(["tar"]) else {
+                throw MorphError.processFailed("The macOS TAR tool is unavailable.")
+            }
+            let listing = try ProcessRunner.run(executable: tar, arguments: ["-tzf", input.path], cancellation: cancellation)
+            guard listing.status == 0 else { throw MorphError.invalidInput("The TAR.GZ directory could not be read.") }
+            try validateArchivePaths(listing.stdout)
+            let extracted = try ProcessRunner.run(executable: tar, arguments: ["-xzf", input.path, "-C", directory.path, "--no-same-owner"], cancellation: cancellation)
+            guard extracted.status == 0 else { throw MorphError.invalidInput(extracted.stderr.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        } else {
+            throw MorphError.unsupportedConversion(inputExt, "archive contents")
+        }
+        try ensureExtractedItemsStayInside(directory)
+    }
+
+    static func archiveExtension(for url: URL) -> String {
+        let name = url.lastPathComponent.lowercased()
+        if name.hasSuffix(".tar.gz") || name.hasSuffix(".tgz") { return "tar.gz" }
+        if name.hasSuffix(".zip") { return "zip" }
+        if name.hasSuffix(".7z") { return "7z" }
+        return url.pathExtension.lowercased()
+    }
+
+    static func validateArchivePaths(_ listing: String) throws {
         for rawPath in listing.split(separator: "\n") {
             let path = String(rawPath).replacingOccurrences(of: "\\", with: "/")
-            if path.hasPrefix("/") || path.split(separator: "/").contains("..") {
+            let hasWindowsDrivePrefix = path.range(of: "^[A-Za-z]:/", options: .regularExpression) != nil
+            if path.hasPrefix("/") || hasWindowsDrivePrefix || path.split(separator: "/").contains("..") {
                 throw MorphError.invalidInput("The archive contains a path that escapes its extraction folder.")
             }
         }
     }
 
-    private static func ensureExtractedItemsStayInside(_ directory: URL) throws {
+    static func ensureExtractedItemsStayInside(_ directory: URL) throws {
         let root = directory.standardizedFileURL.path + "/"
         guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: [.isSymbolicLinkKey]) else { return }
         for case let item as URL in enumerator {
@@ -388,6 +428,95 @@ public enum ArchiveEngine {
             if !resolved.hasPrefix(root) && resolved != directory.standardizedFileURL.path {
                 throw MorphError.invalidInput("The archive contains a link that escapes its extraction folder.")
             }
+        }
+    }
+}
+
+enum SevenZipArchiveEngine {
+    static func convert(executable: URL, input: URL, output: URL, cancellation: CancellationToken) throws {
+        let inputExtension = ArchiveEngine.archiveExtension(for: input)
+        guard ["7z", "zip"].contains(inputExtension) else {
+            throw MorphError.unsupportedConversion(inputExtension, output.pathExtension)
+        }
+        let outputExtension = output.pathExtension.lowercased()
+        guard ["7z", "zip"].contains(outputExtension) else {
+            throw MorphError.unsupportedConversion(inputExtension, outputExtension)
+        }
+
+        let workDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("morph-7zip-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: workDirectory) }
+
+        if inputExtension == "7z" {
+            try validateSevenZipListing(executable: executable, input: input, cancellation: cancellation)
+            let extracted = try ProcessRunner.run(
+                executable: executable,
+                arguments: ["x", "-y", "-o\(workDirectory.path)", input.path],
+                cancellation: cancellation
+            )
+            guard extracted.status == 0 else {
+                throw MorphError.invalidInput(extracted.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            try ArchiveEngine.ensureExtractedItemsStayInside(workDirectory)
+        } else {
+            try ArchiveEngine.extract(input: input, to: workDirectory, cancellation: cancellation)
+        }
+
+        let type = outputExtension == "7z" ? "7z" : "zip"
+        let created = try ProcessRunner.run(
+            executable: executable,
+            arguments: ["a", "-t\(type)", output.path, "."],
+            currentDirectory: workDirectory,
+            cancellation: cancellation
+        )
+        guard created.status == 0 else {
+            throw MorphError.processFailed(created.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    private static func validateSevenZipListing(executable: URL, input: URL, cancellation: CancellationToken) throws {
+        let listing = try ProcessRunner.run(
+            executable: executable,
+            arguments: ["l", "-slt", "-sccUTF-8", input.path],
+            cancellation: cancellation
+        )
+        guard listing.status == 0 else { throw MorphError.invalidInput("The 7-Zip archive directory could not be read.") }
+        try validateListingText(listing.stdout)
+    }
+
+    static func validateListingText(_ listing: String) throws {
+        var readingEntries = false
+        var currentEntry: [String] = []
+        var entries: [[String]] = []
+        for line in listing.components(separatedBy: .newlines) {
+            if line.trimmingCharacters(in: .whitespacesAndNewlines) == "----------" {
+                if !currentEntry.isEmpty { entries.append(currentEntry); currentEntry = [] }
+                readingEntries = true
+            } else if readingEntries && line.isEmpty {
+                if !currentEntry.isEmpty { entries.append(currentEntry); currentEntry = [] }
+            } else if readingEntries {
+                currentEntry.append(line)
+            }
+        }
+        if !currentEntry.isEmpty { entries.append(currentEntry) }
+
+        for entry in entries {
+            var path: String?
+            for field in entry {
+                guard let separator = field.firstIndex(of: "=") else {
+                    throw MorphError.invalidInput("The 7-Zip directory could not be parsed safely.")
+                }
+                let key = field[..<separator].trimmingCharacters(in: .whitespaces)
+                let value = field[field.index(after: separator)...].trimmingCharacters(in: .whitespaces)
+                if key == "Path" { path = value }
+                if key == "Symbolic Link" || key == "Hard Link" || (key == "Attributes" && value.uppercased().contains("L")) {
+                    throw MorphError.invalidInput("Archives containing symbolic or hard links cannot be converted safely.")
+                }
+            }
+            guard let path, !path.isEmpty else {
+                throw MorphError.invalidInput("The 7-Zip directory did not provide a safe path for every entry.")
+            }
+            try ArchiveEngine.validateArchivePaths(path)
         }
     }
 }
@@ -419,7 +548,7 @@ public enum OutputValidator {
         case .spreadsheet where ["yaml", "yml", "toml"].contains(format.fileExtension):
             try StructuredDataEngine.validateGeneratedOutput(url, extension: format.fileExtension)
         case .archive:
-            try validateArchive(url, format: format)
+            try validateArchive(url, format: format, engine: engine)
         case .audio, .video:
             try validateMedia(url)
         default:
@@ -433,8 +562,16 @@ public enum OutputValidator {
         }
     }
 
-    private static func validateArchive(_ url: URL, format: MorphFormat) throws {
+    private static func validateArchive(_ url: URL, format: MorphFormat, engine: EngineID) throws {
         let outputExt = format.fileExtension
+        if engine == .sevenZip {
+            guard let executable = ExecutableLocator.resolve(["7zz", "7z"]) else {
+                throw MorphError.invalidOutput("7-Zip is unavailable to validate this archive.")
+            }
+            let result = try ProcessRunner.run(executable: executable, arguments: ["t", url.path])
+            guard result.status == 0 else { throw MorphError.invalidOutput("The generated archive failed its 7-Zip integrity check.") }
+            return
+        }
         let executable = outputExt == "zip" ? ExecutableLocator.resolve(["unzip"]) : ExecutableLocator.resolve(["tar"])
         guard let executable else { throw MorphError.invalidOutput("No archive validation tool is available.") }
         let result = outputExt == "zip"

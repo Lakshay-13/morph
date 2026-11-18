@@ -97,7 +97,7 @@ public struct EngineRegistry: Sendable {
         case .ghostscript:
             return ([], [])
         case .sevenZip:
-            return (["7z", "zip", "tar", "tar.gz", "tgz", "gz", "bz2", "xz", "rar"], ["7z", "zip", "tar", "tar.gz", "tgz", "gz", "bz2", "xz"])
+            return (["7z", "zip"], ["7z", "zip"])
         case .libreOffice:
             return OfficeCapabilities.probe(executable)
         case .nativeImage, .nativePDF, .structuredData, .archive:
@@ -368,6 +368,15 @@ private enum ConversionCatalog {
             add("zip", "tar.gz", .archive, "Repackage with built-in macOS archive tools")
             add("tar.gz", "zip", .archive, "Repackage with built-in macOS archive tools")
             add("tgz", "zip", .archive, "Repackage with built-in macOS archive tools")
+        }
+
+        let sevenZip = statuses[.sevenZip]
+        if let sevenZip, sevenZip.isInstalled {
+            for input in sevenZip.supportedInputExtensions {
+                for output in sevenZip.supportedOutputExtensions where input != output {
+                    add(input, output, .sevenZip, "Convert with 7-Zip", category: .archive)
+                }
+            }
         }
 
         return Array(Set(result)).sorted {

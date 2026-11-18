@@ -179,7 +179,7 @@ public enum EngineID: String, CaseIterable, Codable, Sendable {
         case .pandoc: "Convert supported documents, markup and presentations."
         case .poppler: "Extract text and render PDF pages."
         case .ghostscript: "Compress PDFs locally with selectable Ghostscript presets."
-        case .sevenZip: "7z, XZ, BZIP2 and additional archive formats."
+        case .sevenZip: "Create and unpack 7z archives and convert them to and from ZIP."
         case .libreOffice: "Office document, spreadsheet and presentation conversions."
         }
     }

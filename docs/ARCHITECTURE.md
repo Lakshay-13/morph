@@ -43,7 +43,7 @@ The action appears under Finder's **Quick Actions** context menu. Finder Sync is
 3. Runs fixed version/capability queries such as `ffmpeg -demuxers`, `-muxers`, `-encoders`, ImageMagick's format listing, Pandoc's reader/writer listings, and LibreOffice's headless version probe.
 4. Produces conversion routes for the installed and implemented adapters.
 
-Routes are deterministic: built-in adapters are preferred, followed by FFmpeg/Pandoc/Poppler, then other optional adapters. LibreOffice is listed only after a real executable is found. Ghostscript provides a PDF-compression operation outside the route graph. `libvips` and 7-Zip are probed as future candidates without current Morph conversion adapters.
+Routes are deterministic: built-in adapters are preferred, followed by FFmpeg/Pandoc/Poppler, then other optional adapters. LibreOffice is listed only after a real executable is found. Ghostscript provides a PDF-compression operation outside the route graph. 7-Zip provides ZIP ↔ 7z archive routes only when `7zz` is installed. Its adapter validates 7z member paths and rejects link entries before extraction. `libvips` remains a probed candidate without a conversion adapter.
 
 Video trimming is an FFmpeg operation outside the general route graph. Morph checks the source duration, re-encodes the requested interval as H.264/AAC MP4, validates the resulting media and duration, and selects a unique destination. The confirmation explains that quality may change and subtitles or some metadata may not carry over. It preserves the source and can cancel the FFmpeg process. If FFmpeg is absent, Morph asks before offering installation and retries the request after approval.
 
