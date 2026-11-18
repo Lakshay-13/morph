@@ -5,7 +5,7 @@
 **Run date:** 2026-11-18
 
 **Command:** `Scripts/run-checks.sh` with SwiftPM using the selected Xcode 27 toolchain
-**Result:** 21 automated groups passed, 0 failed, 0 skipped. Thirty-one distinct input/output format pairs, PDF page-range extraction, PDF compression, video trimming and batch rename copies were executed with real generated files.
+**Result:** 22 automated groups passed, 0 failed, 1 skipped. The local harness executed 31 distinct input/output format pairs, PDF page-range extraction, PDF compression, video trimming and batch rename copies with real generated files. The 7-Zip conversion group was skipped locally because `7zz`/`7z` is not installed; the archive listing safety group passed.
 
 The harness checks that each conversion output exists and is non-empty, runs `OutputValidator`, verifies the generated content or media properties where practical, and checks SHA-256 of the original file before and after conversion. Fixtures are generated locally; no network service is used for conversion.
 
@@ -44,6 +44,13 @@ The harness checks that each conversion output exists and is non-empty, runs `Ou
 | ZIP → TAR.GZ | macOS archive tools | Passed; resulting TAR.GZ listed successfully. |
 | TAR.GZ → ZIP | macOS archive tools | Passed; ZIP integrity and expected member checked. |
 | TIFF → JPEG | Apple ImageIO | Passed as part of a two-file batch; decoded, collision-safe name verified. |
+
+### CI-only optional-engine pairs
+
+| Input → output | Engine | Result and validation |
+|---|---|---|
+| ZIP → 7z | 7-Zip (`sevenzip` Homebrew formula) | Passed on the macOS 26 arm64 runner in [Actions run 44224494535](https://github.com/Lakshay-13/morph/actions/runs/44224494535); generated archive passed `7zz t`, and the source ZIP checksum remained unchanged. |
+| 7z → ZIP | 7-Zip (`sevenzip` Homebrew formula) | Passed in the same round trip; the ZIP output passed integrity checking and retained the expected payload text. |
 
 Batch checks also converted a PNG and TIFF to JPEG while preserving checksums and preserving an existing destination as `same-2.jpg` and `same-3.jpg`.
 
@@ -85,12 +92,12 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 
 ## GitHub Actions architecture coverage
 
-[Latest macOS CI run 44200687663](https://github.com/Lakshay-13/morph/actions/runs/44200687663) on commit `5947be1` completed successfully.
+[Latest macOS CI run 44224494535](https://github.com/Lakshay-13/morph/actions/runs/44224494535) on commit `2d90270` completed successfully.
 
 | Runner | Validation | Result |
 |---|---|---|
-| macOS 26, x86_64 | Confirmed the runner architecture, installed the engines available for that architecture, built Morph, and ran the real-file conversion checks. The LibreOffice Cask install is skipped on Intel because its current upstream Cask download returns 404; LibreOffice routes are capability-gated. | Passed. |
-| macOS 26, arm64 | Confirmed the runner architecture, installed conversion engines including LibreOffice, built Morph, and ran the real-file conversion checks. | Passed. |
+| macOS 26, x86_64 | Confirmed the runner architecture, installed the engines available for that architecture, built Morph, and ran the real-file conversion checks. LibreOffice and 7-Zip installs are skipped on Intel; their routes are capability-gated. | Passed. |
+| macOS 26, arm64 | Confirmed the runner architecture, installed conversion engines including LibreOffice and 7-Zip, built Morph, and ran the real-file conversion checks, including ZIP ↔ 7z. | Passed. |
 | macOS 26, arm64 universal-package job | Passed `brew audit --cask` and `brew style --cask`, built the release ZIP, checked that the app executable contains arm64 and x86_64 slices, verified the app signature and bundled license files, checked the ZIP and AppleDouble metadata, and matched the SHA-256 file. | Passed. |
 
 The hosted Intel runner provides actual x86_64 conversion-runtime coverage. The final packaged app has not been installed and launched on a physical Intel Mac. The CI package is ad-hoc signed and is not a Gatekeeper-ready release.
