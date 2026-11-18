@@ -1,0 +1,31 @@
+name: MorphFinderSync
+options:
+  deploymentTarget:
+    macOS: "14.0"
+packages:
+  Morph:
+    path: ..
+targets:
+  MorphFinderSync:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: MorphFinderSync.swift
+    dependencies:
+      - package: Morph
+        product: MorphCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lakshaychawla.Morph.FinderSync
+        PRODUCT_MODULE_NAME: MorphFinderSync
+        INFOPLIST_FILE: Info.plist
+        CODE_SIGN_ENTITLEMENTS: MorphFinderSync.entitlements
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        GENERATE_INFOPLIST_FILE: NO
+        APPLICATION_EXTENSION_API_ONLY: YES
+        ENABLE_APP_SANDBOX: YES
+        ENABLE_USER_SELECTED_FILES: readwrite
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        SWIFT_VERSION: "5.0"
+        SKIP_INSTALL: YES

@@ -59,8 +59,33 @@ else
   exit 2
 fi
 
+SYNC_DERIVED_DATA="$REPO_ROOT/.build/finder-sync-${BUILD_ARCH}"
+EXTENSION_ARCHS="$BUILD_ARCH"
+if [[ "$BUILD_ARCH" == "universal" ]]; then
+  EXTENSION_ARCHS="arm64 x86_64"
+fi
+xcodebuild \
+  -quiet \
+  -project "$REPO_ROOT/FinderSync/MorphFinderSync.xcodeproj" \
+  -scheme MorphFinderSync \
+  -configuration Release \
+  -derivedDataPath "$SYNC_DERIVED_DATA" \
+  -destination 'generic/platform=macOS' \
+  ARCHS="$EXTENSION_ARCHS" \
+  ONLY_ACTIVE_ARCH=NO \
+  MARKETING_VERSION="$APP_VERSION" \
+  CODE_SIGNING_ALLOWED=YES \
+  CODE_SIGN_IDENTITY="$SIGN_IDENTITY" \
+  build
+FINDER_SYNC_PRODUCT="$SYNC_DERIVED_DATA/Build/Products/Release/MorphFinderSync.appex"
+if [[ ! -d "$FINDER_SYNC_PRODUCT" ]]; then
+  printf 'Finder Sync extension build product is missing: %s\n' "$FINDER_SYNC_PRODUCT" >&2
+  exit 1
+fi
+
 HELPER_APP_PATH="$APP_PATH/Contents/Helpers/MorphQuickConvert.app"
-mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources" "$HELPER_APP_PATH/Contents/MacOS"
+FINDER_SYNC_APP_PATH="$APP_PATH/Contents/PlugIns/MorphFinderSync.appex"
+mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources" "$HELPER_APP_PATH/Contents/MacOS" "$APP_PATH/Contents/PlugIns"
 if [[ "$BUILD_ARCH" == "universal" ]]; then
   mv "$APP_EXECUTABLE" "$APP_PATH/Contents/MacOS/Morph"
 else
@@ -76,7 +101,7 @@ cp "$REPO_ROOT/Resources/Info.plist" "$APP_PATH/Contents/Info.plist"
 cp "$REPO_ROOT/Resources/MorphQuickConvert-Info.plist" "$HELPER_APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$HELPER_APP_PATH/Contents/Info.plist"
 cp "$ICON_SOURCE" "$APP_PATH/Contents/Resources/morph-logo.png"
-ditto "$REPO_ROOT/Resources/QuickActions/Convert with Morph.workflow" "$APP_PATH/Contents/Resources/Convert with Morph.workflow"
+ditto "$FINDER_SYNC_PRODUCT" "$FINDER_SYNC_APP_PATH"
 mkdir -p "$APP_PATH/Contents/Resources/Legal/THIRD_PARTY_LICENSES"
 cp "$REPO_ROOT/LICENSE" "$APP_PATH/Contents/Resources/Legal/LICENSE"
 cp "$REPO_ROOT/docs/THIRD_PARTY.md" "$APP_PATH/Contents/Resources/Legal/THIRD_PARTY.md"
@@ -94,6 +119,7 @@ rm -r "$(dirname "$ICONSET")"
 
 plutil -lint "$APP_PATH/Contents/Info.plist"
 plutil -lint "$HELPER_APP_PATH/Contents/Info.plist"
+plutil -lint "$FINDER_SYNC_APP_PATH/Contents/Info.plist"
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
   codesign --force --sign - "$HELPER_APP_PATH"
   codesign --force --sign - "$APP_PATH"

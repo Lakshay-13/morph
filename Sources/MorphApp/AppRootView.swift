@@ -154,7 +154,7 @@ struct OverviewView: View {
                         .font(.system(size: 34, weight: .bold, design: .rounded))
                     Text("Convert and prepare files with tools that run locally on your Mac.")
                         .font(.title3).foregroundStyle(.secondary)
-                    Label("Finder: right-click a file → Quick Actions → Convert with Morph", systemImage: "cursorarrow.click")
+                    Label("Finder: right-click → Convert To → Convert with Morph → choose a format", systemImage: "cursorarrow.click")
                         .font(.subheadline.weight(.medium))
                         .padding(.top, 4)
                 }
@@ -269,7 +269,7 @@ struct ConvertView: View {
                 }
 
                 if model.selectedFiles.isEmpty {
-                    ContentUnavailableView("No files selected", systemImage: "doc.badge.plus", description: Text("Add files or use Finder’s Quick Actions menu to send a selection to Morph."))
+                    ContentUnavailableView("No files selected", systemImage: "doc.badge.plus", description: Text("Add files here or choose a format from Finder’s Convert with Morph submenu."))
                         .frame(minHeight: 250)
                 } else {
                     VStack(alignment: .leading, spacing: 10) {

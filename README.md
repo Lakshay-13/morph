@@ -8,12 +8,12 @@ Morph is a native SwiftUI macOS utility for converting and transforming files wi
 
 ## What works today
 
-- Finder Quick Action: right-click selected files, choose **Quick Actions → Convert with Morph**, then choose a supported output from Morph's small native popover. The main Morph window stays closed unless you choose **Open Morph with These Files…**.
+- Finder conversion submenu implementation: a correctly signed and enabled build shows **Convert To → Convert with Morph → PNG → JPEG (.jpg)**-style choices directly in Finder. The main Morph window and a format-picker window stay closed; this Mac's ad-hoc build does not currently expose the Finder menu.
 - Drag and drop or select multiple files in the app. Mixed selections can be batch-converted when every input shares the chosen output route.
 - Runtime format discovery from Apple ImageIO, FFmpeg codecs and containers, ImageMagick, Pandoc, Poppler and LibreOffice.
 - Fallback to another registered engine when a higher-priority adapter fails and a second route exists.
 - Native image conversion and image-to-PDF, audio/video conversion, document conversion, PDF text extraction, JSON/YAML/TOML/CSV/TSV/XML data transformations, ZIP/TAR.GZ repackaging and optional ZIP ↔ 7z conversion.
-- Quick actions for 50% image resizing, merging selected PDFs, extracting selected PDF page ranges, splitting a PDF into pages, preset-based PDF compression, extracting ZIP archives, trimming video and compressing one or more selected videos to H.264 MP4.
+- Additional operations include 50% image resizing, merging selected PDFs, extracting selected PDF page ranges, splitting a PDF into pages, preset-based PDF compression, extracting ZIP archives, trimming video and compressing one or more selected videos to H.264 MP4.
 - Video compression offers smaller-file, balanced and higher-quality settings, plus maximum resolution choices of 1080p, 720p or the source size. Morph reports actual size changes because already-compressed inputs may produce larger files.
 - A dedicated Operations page previews numbered batch-renamed copies, preserves each full filename and extension, and leaves the original files unchanged.
 - Read-only image and PDF metadata inspection, including image dimensions and available camera fields, or PDF page count and document attributes.
@@ -25,9 +25,9 @@ Morph is a native SwiftUI macOS utility for converting and transforming files wi
 
 ## Finder workflow
 
-The primary Finder entry is a Quick Action installed to `~/Library/Services`. It writes only selected file paths to a short-lived property list in Morph's Application Support folder, then opens the accessory conversion helper using a local `morphquick://` handoff URL. The helper validates and removes the manifest, detects the selected file formats, and shows output formats supported by every selected file and the engines installed on this Mac. Choosing a format converts the files without opening the main Morph window; **Open Morph with These Files…** remains available as an explicit choice.
+Morph embeds a sandboxed Finder Sync extension. In Finder's contextual menu, **Convert To → Convert with Morph** opens a submenu whose items identify the source formats and show output routes available for every selected file. Choosing a row sends the selection and output format to Morph's accessory helper. The helper rechecks the route and runs conversion in the background; neither Morph's main window nor a format-picker window opens. A small menu-bar status item provides progress and cancellation. The Finder extension currently advertises native ImageIO, PDF and structured-data routes; media and optional-engine routes remain available in Morph's main app.
 
-The format picker appears as a compact native popover after the Quick Action runs. Automator Quick Actions do not expose an API for inserting a dynamic child menu into Finder's built-in **Quick Actions** list, so Morph cannot place the formats directly inside that Finder submenu. Finder Sync is intended for sync-state and sync controls in monitored folders; Morph keeps the actual conversion in its local helper. See [Apple's Finder Sync guidance](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/Finder.html) and [Services menu documentation](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/SysServices/Articles/menu.html).
+Finder does not let an Automator Quick Action add a dynamic submenu to its built-in **Quick Actions** section. Morph's submenu therefore appears as a separate native Finder contextual-menu item, not inside **Quick Actions**. Finder Sync supports dynamic menus based on `selectedItemURLs()`, but Apple describes it as a sync-oriented extension point and cautions against using it as a general Finder UI customization mechanism. Morph monitors the current user's home folder, mounted volumes, network shares and `/Users/Shared`; temporary files outside those locations do not receive the menu. Ad-hoc development builds may not be surfaced by Finder; public distribution requires a valid Developer ID signature and notarization. Users can enable or disable a signed Morph extension under **System Settings → General → Login Items & Extensions → Finder Extensions**. See [Apple's Finder Sync guidance](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/Finder.html) and [`menu(for:)`](https://developer.apple.com/documentation/findersync/1501586-fifindersync/1501585-menuformenukind).
 
 ## Format availability
 
@@ -74,7 +74,7 @@ swift build --product Morph
 Scripts/build-app.sh
 ```
 
-The app bundle is created at `dist/Morph.app`. Install it and its Finder Quick Action for the current user with:
+The app bundle is created at `dist/Morph.app`, including a universal Finder Sync extension and the background conversion helper. Install it and register Finder integration for the current user with:
 
 ```sh
 Scripts/install-app.sh
@@ -84,10 +84,9 @@ The development build is ad-hoc signed and is not the signed/notarized public re
 
 ## Use Morph
 
-1. Select files in Finder and invoke **Quick Actions → Convert with Morph**, or open Morph and add/drop files.
-2. Choose an output format that is available for all selected files.
-3. Choose the output location in Settings. The default is beside each original.
-4. Start the conversion. Morph writes to a temporary file, validates it, then saves with a unique name. Originals remain unchanged.
+1. Select files in Finder and choose **Convert To → Convert with Morph → [source → output format]**, or open Morph and add/drop files.
+2. The Finder submenu shows only formats available for the entire selection. Set the output location in Settings; the default is beside each original.
+3. Morph converts in the background, validates the output and saves it with a unique name. Originals remain unchanged.
 
 The image quality setting applies to lossy image outputs; the Images to WebP at 80% preset overrides it for that conversion. Resize quick actions scale images to 50% of their current longest edge and save JPEG copies. Choose the PDF compression preset in Settings; compression writes a new PDF and may alter metadata or interactive PDF features. A compressed copy cannot retain the original digital signature.
 

@@ -1,7 +1,6 @@
 import AppKit
 import Foundation
 import MorphCore
-import SwiftUI
 import UserNotifications
 
 @main
@@ -17,164 +16,174 @@ private enum MorphQuickConvertMain {
     }
 }
 
-private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
     private let supportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Morph", isDirectory: true)
-    private var pendingSelections: [[URL]] = []
-    private var currentSelection: [URL] = []
-    private var currentRegistry: EngineRegistry?
-    private var isPresentingMenu = false
+    private var pendingRequests: [QuickConversionRequest] = []
+    private var pendingConversionRequests: [FinderConversionRequest] = []
+    private var pendingFileSelections: [[URL]] = []
     private var isConverting = false
-    private var isOpeningMorph = false
     private var cancellation: CancellationToken?
     private var statusItem: NSStatusItem?
     private var statusMessageItem: NSMenuItem?
-    private var formatPopover: NSPopover?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        let openedFiles = urls.filter(\.isFileURL)
+        if !openedFiles.isEmpty {
+            enqueueOpenedFiles(openedFiles.map(\.path))
+        }
+        enqueueConversionRequests(in: urls)
+        matchPendingRequests()
+        startNextRequestIfReady()
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        enqueueOpenedFiles(filenames)
+        matchPendingRequests()
+        startNextRequestIfReady()
+        sender.reply(toOpenOrPrint: .success)
+    }
+
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        enqueueOpenedFiles([filename])
+        matchPendingRequests()
+        startNextRequestIfReady()
+        return true
+    }
+
+    private func enqueueOpenedFiles(_ filenames: [String]) {
+        guard !filenames.isEmpty else { return }
+        let inputs = filenames.map { URL(fileURLWithPath: $0).standardizedFileURL }
+        pendingFileSelections.append(inputs)
+        let paths = inputs.map(\.path).sorted()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            guard let self else { return }
+            self.pendingFileSelections.removeAll { $0.map(\.path).sorted() == paths }
+            self.terminateIfIdle()
+        }
+    }
+
+    private func conversionRequests(in urls: [URL]) -> [FinderConversionRequest] {
+        var requests: [FinderConversionRequest] = []
         for url in urls {
-            guard let selection = loadSelection(from: url), !selection.isEmpty else { continue }
-            pendingSelections.append(selection)
-        }
-        // Let Finder finish closing the Quick Actions menu before showing our native popup.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            self.presentNextMenuIfReady()
-        }
-    }
-
-    private func loadSelection(from url: URL) -> [URL]? {
-        guard url.scheme == "morphquick", url.host == "convert",
-              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let token = components.queryItems?.first(where: { $0.name == "manifest" })?.value,
-              let uuid = UUID(uuidString: token) else { return nil }
-
-        let directory = supportDirectory.appendingPathComponent("QuickActions", isDirectory: true).standardizedFileURL
-        let manifestURL = directory.appendingPathComponent("\(uuid.uuidString.lowercased()).plist").standardizedFileURL
-        guard manifestURL.deletingLastPathComponent() == directory,
-              let data = try? Data(contentsOf: manifestURL),
-              let manifest = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
-              let paths = manifest["paths"] as? [String], !paths.isEmpty else { return nil }
-        try? FileManager.default.removeItem(at: manifestURL)
-        return paths.map { URL(fileURLWithPath: $0) }
-            .filter { FileManager.default.fileExists(atPath: $0.path) }
-            .filter { url in
-                (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            guard url.scheme == "morphquick", url.host == "convert",
+                  let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                  let encoded = components.queryItems?.first(where: { $0.name == "request" })?.value,
+                  let data = Data(base64Encoded: encoded),
+                  let payload = try? JSONDecoder().decode(FinderConversionRequest.self, from: data),
+                  !payload.paths.isEmpty,
+                  payload.outputExtension.range(of: #"^[a-z0-9.]{1,16}$"#, options: .regularExpression) != nil else {
+                continue
             }
+            requests.append(payload)
+        }
+        return requests
     }
 
-    private func presentNextMenuIfReady() {
-        guard !isPresentingMenu, !isConverting else { return }
-        guard !pendingSelections.isEmpty else {
-            NSApp.terminate(nil)
+    private func enqueueConversionRequests(in urls: [URL]) {
+        let requests = conversionRequests(in: urls)
+        pendingConversionRequests.append(contentsOf: requests)
+        for request in requests {
+            let paths = request.paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }.sorted()
+            let outputExtension = request.outputExtension
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+                guard let self else { return }
+                self.pendingConversionRequests.removeAll {
+                    $0.outputExtension == outputExtension &&
+                    $0.paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }.sorted() == paths
+                }
+                self.terminateIfIdle()
+            }
+        }
+    }
+
+    private func matchPendingRequests() {
+        while let requestIndex = pendingConversionRequests.firstIndex(where: { request in
+            let requestedPaths = request.paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }.sorted()
+            return pendingFileSelections.contains { $0.map(\.path).sorted() == requestedPaths }
+        }) {
+            let request = pendingConversionRequests.remove(at: requestIndex)
+            let requestedPaths = request.paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }.sorted()
+            guard let selectionIndex = pendingFileSelections.firstIndex(where: { $0.map(\.path).sorted() == requestedPaths }) else { continue }
+            let inputs = pendingFileSelections.remove(at: selectionIndex)
+            guard inputs.allSatisfy({ (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }) else {
+                continue
+            }
+            pendingRequests.append(QuickConversionRequest(inputs: inputs, outputExtension: request.outputExtension))
+        }
+    }
+
+    private func startNextRequestIfReady() {
+        guard !isConverting else { return }
+        guard !pendingRequests.isEmpty else {
+            terminateIfIdle()
             return
         }
 
-        currentSelection = pendingSelections.removeFirst()
-        guard !currentSelection.isEmpty else {
-            presentNextMenuIfReady()
-            return
-        }
-        let registry = EngineRegistry.discover()
-        currentRegistry = registry
-        let formats = QuickConversionCatalog.availableOutputs(for: currentSelection, registry: registry)
-
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "Morph"
-        item.button?.toolTip = "Choose an output format for the selected files"
-        statusItem = item
-
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.animates = true
-        popover.delegate = self
-        popover.contentViewController = NSHostingController(rootView: QuickFormatPopoverContent(
-            title: selectionDescription(currentSelection),
-            formats: formats,
-            onSelectFormat: { [weak self] format in self?.convertSelection(format) },
-            onOpenMorph: { [weak self] in self?.openMorphWithSelection() }
-        ))
-        formatPopover = popover
-
-        isPresentingMenu = true
-        NSApp.activate(ignoringOtherApps: true)
-        if let button = item.button {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-        } else {
-            finishPopoverWithoutSelection()
-        }
-    }
-
-    func popoverDidClose(_ notification: Notification) {
-        isPresentingMenu = false
-        formatPopover = nil
-        guard !isConverting && !isOpeningMorph else { return }
-        finishPopoverWithoutSelection()
-    }
-
-    private func finishPopoverWithoutSelection() {
-        isPresentingMenu = false
-        formatPopover = nil
-        if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
-        statusItem = nil
-        currentSelection = []
-        currentRegistry = nil
-        if pendingSelections.isEmpty {
-            NSApp.terminate(nil)
-        } else {
-            DispatchQueue.main.async { self.presentNextMenuIfReady() }
-        }
-    }
-
-    private func selectionDescription(_ urls: [URL]) -> String {
-        guard let first = urls.first else { return "Convert with Morph" }
-        let extensions = Set(urls.map { $0.pathExtension.lowercased() }.filter { !$0.isEmpty })
-        let source = extensions.count == 1 ? (first.pathExtension.uppercased()) : "files"
-        return urls.count == 1 ? "Convert \(source) to…" : "Convert \(urls.count) \(source) to…"
-    }
-
-    private func convertSelection(_ format: MorphFormat) {
-        guard let registry = currentRegistry,
-              !currentSelection.isEmpty,
-              !isConverting else { return }
-
-        let inputs = currentSelection
-        let settings = conversionSettings()
+        let request = pendingRequests.removeFirst()
         let token = CancellationToken()
         cancellation = token
         isConverting = true
-        formatPopover?.performClose(nil)
-        formatPopover = nil
-        installProgressStatusItem(total: inputs.count)
+        installProgressStatusItem(total: request.inputs.count)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let registry = EngineRegistry.discoverFinderSync()
+            let available = QuickConversionCatalog.availableOutputs(for: request.inputs, registry: registry)
+            guard let format = available.first(where: { $0.fileExtension == request.outputExtension }) else {
+                DispatchQueue.main.async {
+                    self?.finishConversion(
+                        results: [],
+                        failures: [(request.inputs.first?.lastPathComponent ?? "Selection", "This conversion is no longer available for the selected files or installed engines.")],
+                        cancelled: false,
+                        total: request.inputs.count
+                    )
+                }
+                return
+            }
+
+            let settings = self?.conversionSettings() ?? QuickConversionSettings()
             let service = ConversionService(registry: registry)
             var results: [ConversionResult] = []
             var failures: [(String, String)] = []
 
-            for (index, input) in inputs.enumerated() {
+            for (index, input) in request.inputs.enumerated() {
                 if token.isCancelled { break }
-                DispatchQueue.main.async { self?.updateProgress(index: index + 1, total: inputs.count, fileName: input.lastPathComponent) }
+                DispatchQueue.main.async {
+                    self?.updateProgress(index: index + 1, total: request.inputs.count, fileName: input.lastPathComponent)
+                }
                 do {
-                    let request = ConversionRequest(
+                    let conversion = ConversionRequest(
                         inputURL: input,
                         outputFormat: format,
-                        outputDirectory: self?.outputDirectory(for: input, settings: settings) ?? input.deletingLastPathComponent(),
+                    outputDirectory: self?.outputDirectory(
+                            for: input,
+                            defaultDirectory: input.deletingLastPathComponent(),
+                            settings: settings
+                        ) ?? input.deletingLastPathComponent(),
                         imageQuality: settings.imageQuality
                     )
-                    results.append(try service.convert(request, cancellation: token))
+                    results.append(try service.convert(conversion, cancellation: token))
                 } catch {
                     if !token.isCancelled { failures.append((input.lastPathComponent, error.localizedDescription)) }
                 }
             }
 
             DispatchQueue.main.async {
-                self?.finishConversion(results: results, failures: failures, cancelled: token.isCancelled, total: inputs.count)
+                self?.finishConversion(results: results, failures: failures, cancelled: token.isCancelled, total: request.inputs.count)
             }
         }
+    }
+
+    private func terminateIfIdle() {
+        guard !isConverting,
+              pendingRequests.isEmpty,
+              pendingConversionRequests.isEmpty,
+              pendingFileSelections.isEmpty else { return }
+        NSApp.terminate(nil)
     }
 
     private func conversionSettings() -> QuickConversionSettings {
@@ -186,7 +195,7 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate, NS
         return settings
     }
 
-    private func outputDirectory(for input: URL, settings: QuickConversionSettings) -> URL {
+    private func outputDirectory(for input: URL, defaultDirectory: URL, settings: QuickConversionSettings) -> URL {
         switch settings.outputMode {
         case "Morph Output folder":
             return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -197,16 +206,16 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate, NS
             }
             return input.deletingLastPathComponent()
         default:
-            return input.deletingLastPathComponent()
+            return defaultDirectory
         }
     }
 
     private func installProgressStatusItem(total: Int) {
         let item = statusItem ?? NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "Morph"
-        item.button?.toolTip = "Morph is converting the selected files"
+        item.button?.title = "Morph …"
+        item.button?.toolTip = "Morph is preparing the selected conversion"
         let menu = NSMenu()
-        let message = NSMenuItem(title: "Preparing conversion…", action: nil, keyEquivalent: "")
+        let message = NSMenuItem(title: "Checking installed conversion support…", action: nil, keyEquivalent: "")
         message.isEnabled = false
         menu.addItem(message)
         menu.addItem(.separator())
@@ -240,37 +249,34 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate, NS
         saveHistory(results)
         isConverting = false
         cancellation = nil
+
         let summary: String
         if cancelled {
             summary = results.isEmpty ? "Conversion cancelled" : "Cancelled after converting \(results.count) of \(total) files"
         } else if failures.isEmpty {
             summary = "Converted \(results.count) of \(total) files"
+        } else if results.isEmpty {
+            summary = failures.first?.1 ?? "Conversion failed"
         } else {
             summary = "Converted \(results.count); \(failures.count) failed"
         }
+
         statusMessageItem?.title = summary
-        statusItem?.button?.title = "Morph ✓"
+        statusItem?.button?.title = cancelled ? "Morph —" : (failures.isEmpty ? "Morph ✓" : "Morph !")
         deliverCompletionNotification(summary: summary)
 
-        currentSelection = []
-        currentRegistry = nil
         DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
             if let statusItem = self.statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
             self.statusItem = nil
             self.statusMessageItem = nil
-            if self.pendingSelections.isEmpty {
-                NSApp.terminate(nil)
-            } else {
-                self.presentNextMenuIfReady()
-            }
+            self.startNextRequestIfReady()
         }
     }
 
     private func saveHistory(_ results: [ConversionResult]) {
         guard !results.isEmpty else { return }
-        let directory = supportDirectory
-        let historyURL = directory.appendingPathComponent("history.json")
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let historyURL = supportDirectory.appendingPathComponent("history.json")
+        try? FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
         var history = (try? Data(contentsOf: historyURL)).flatMap { try? JSONDecoder().decode([QuickHistoryItem].self, from: $0) } ?? []
         history.insert(contentsOf: results.map {
             QuickHistoryItem(id: UUID(), inputName: $0.inputURL.lastPathComponent, outputPath: $0.outputURL.path, engineName: $0.engine.displayName, date: $0.completedAt)
@@ -290,26 +296,16 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate, NS
             center.add(request)
         }
     }
+}
 
-    private func openMorphWithSelection() {
-        guard !currentSelection.isEmpty else { return }
-        isOpeningMorph = true
-        formatPopover?.performClose(nil)
-        formatPopover = nil
-        let directory = supportDirectory.appendingPathComponent("QuickActions", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let token = UUID().uuidString.lowercased()
-        let manifestURL = directory.appendingPathComponent("\(token).plist")
-        let manifest: [String: Any] = ["paths": currentSelection.map(\.path)]
-        guard let data = try? PropertyListSerialization.data(fromPropertyList: manifest, format: .xml, options: 0) else { return }
-        do { try data.write(to: manifestURL, options: .atomic) } catch { return }
-        var components = URLComponents()
-        components.scheme = "morph"
-        components.host = "convert"
-        components.queryItems = [URLQueryItem(name: "manifest", value: token)]
-        if let url = components.url { NSWorkspace.shared.open(url) }
-        NSApp.terminate(nil)
-    }
+private struct FinderConversionRequest: Decodable {
+    let paths: [String]
+    let outputExtension: String
+}
+
+private struct QuickConversionRequest {
+    let inputs: [URL]
+    let outputExtension: String
 }
 
 private struct QuickConversionSettings: Decodable {
@@ -337,57 +333,4 @@ private struct QuickHistoryItem: Codable {
     let outputPath: String
     let engineName: String
     let date: Date
-}
-
-private struct QuickFormatPopoverContent: View {
-    let title: String
-    let formats: [MorphFormat]
-    let onSelectFormat: (MorphFormat) -> Void
-    let onOpenMorph: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.headline)
-                .lineLimit(2)
-
-            if formats.isEmpty {
-                Text("No installed conversion engine supports this selection.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(formats, id: \.fileExtension) { format in
-                            Button {
-                                onSelectFormat(format)
-                            } label: {
-                                HStack {
-                                    Text(format.displayName)
-                                    Spacer(minLength: 12)
-                                    Text(".\(format.fileExtension)")
-                                        .foregroundStyle(.secondary)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 6)
-                                .padding(.horizontal, 9)
-                                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("morph.quickconvert.\(format.fileExtension)")
-                        }
-                    }
-                }
-                .frame(maxHeight: 420)
-            }
-
-            Divider()
-
-            Button("Open Morph with These Files…", action: onOpenMorph)
-                .buttonStyle(.borderless)
-        }
-        .padding(14)
-        .frame(width: 300)
-    }
 }

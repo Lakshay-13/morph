@@ -26,7 +26,6 @@ fi
 mkdir -p "$STAGE"
 trap 'rm -r "$STAGE"' EXIT
 ditto "$DIST_ROOT/Morph.app" "$STAGE/Morph.app"
-ditto "$REPO_ROOT/Resources/QuickActions/Convert with Morph.workflow" "$STAGE/Convert with Morph.workflow"
 cp "$REPO_ROOT/LICENSE" "$STAGE/LICENSE"
 cp "$REPO_ROOT/docs/THIRD_PARTY.md" "$STAGE/THIRD_PARTY.md"
 ditto "$REPO_ROOT/THIRD_PARTY_LICENSES" "$STAGE/THIRD_PARTY_LICENSES"

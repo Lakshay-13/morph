@@ -95,11 +95,16 @@ jobs:
           app="$RUNNER_TEMP/morph-dist/Morph.app"
           archive="$RUNNER_TEMP/morph-dist/Morph-0.1.0-macOS-universal.zip"
           helper="$app/Contents/Helpers/MorphQuickConvert.app"
+          finder_sync="$app/Contents/PlugIns/MorphFinderSync.appex"
           archs="$(lipo -archs "$app/Contents/MacOS/Morph")"
           [[ "$archs" == *arm64* && "$archs" == *x86_64* ]]
           helper_archs="$(lipo -archs "$helper/Contents/MacOS/MorphQuickConvert")"
           [[ "$helper_archs" == *arm64* && "$helper_archs" == *x86_64* ]]
+          finder_sync_archs="$(lipo -archs "$finder_sync/Contents/MacOS/MorphFinderSync")"
+          [[ "$finder_sync_archs" == *arm64* && "$finder_sync_archs" == *x86_64* ]]
           /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$helper/Contents/Info.plist" | grep -Fxq true
+          /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$finder_sync/Contents/Info.plist" | grep -Fxq true
+          /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$finder_sync/Contents/Info.plist" | grep -Fxq com.apple.FinderSync
           codesign --verify --deep --strict "$app"
           test -s "$app/Contents/Resources/Legal/LICENSE"
           test -s "$app/Contents/Resources/Legal/THIRD_PARTY.md"
@@ -110,6 +115,8 @@ jobs:
           unzip -Z1 "$archive" | grep -Fxq 'Morph-0.1.0/LICENSE'
           unzip -Z1 "$archive" | grep -Fxq 'Morph-0.1.0/THIRD_PARTY_LICENSES/LibYAML-MIT.txt'
           unzip -Z1 "$archive" | grep -Fxq 'Morph-0.1.0/Morph.app/Contents/Helpers/MorphQuickConvert.app/Contents/MacOS/MorphQuickConvert'
+          unzip -Z1 "$archive" | grep -Fxq 'Morph-0.1.0/Morph.app/Contents/PlugIns/MorphFinderSync.appex/Contents/MacOS/MorphFinderSync'
+          if unzip -Z1 "$archive" | grep -Fq 'Convert with Morph.workflow'; then exit 1; fi
           if unzip -Z1 "$archive" | grep -Eq '(^|/)\._'; then exit 1; fi
           unzip -tq "$archive"
           shasum -a 256 -c "$archive.sha256"

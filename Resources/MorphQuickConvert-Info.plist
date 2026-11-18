@@ -14,6 +14,16 @@
 	<string>Morph Quick Convert</string>
 	<key>CFBundleDisplayName</key>
 	<string>Morph</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Morph reads files you choose in Finder and saves converted copies beside them.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Morph reads files you choose in Finder and saves converted copies beside them.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Morph reads files you choose in Finder and saves converted copies beside them.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Morph reads files you choose in Finder and saves converted copies beside them.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Morph reads files you choose in Finder and saves converted copies beside them.</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -26,6 +36,21 @@
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Finder-selected file</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>None</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.item</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

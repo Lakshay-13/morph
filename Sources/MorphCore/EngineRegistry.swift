@@ -16,24 +16,7 @@ public struct EngineRegistry: Sendable {
 
     public static func discover() -> EngineRegistry {
         let imageFormats = ImageCapabilities.discover()
-        var statuses: [EngineID: EngineStatus] = [
-            .nativeImage: EngineStatus(
-                id: .nativeImage,
-                supportedInputExtensions: imageFormats.inputs,
-                supportedOutputExtensions: imageFormats.outputs
-            ),
-            .nativePDF: EngineStatus(id: .nativePDF),
-            .structuredData: EngineStatus(
-                id: .structuredData,
-                supportedInputExtensions: ["json", "csv", "tsv", "xml", "yaml", "yml", "toml"],
-                supportedOutputExtensions: ["json", "csv", "tsv", "xml", "yaml", "yml", "toml"]
-            ),
-            .archive: EngineStatus(
-                id: .archive,
-                supportedInputExtensions: ["zip", "tar.gz", "tgz"],
-                supportedOutputExtensions: ["zip", "tar.gz"]
-            ),
-        ]
+        var statuses = nativeStatuses(imageFormats: imageFormats)
 
         for id in [EngineID.ffmpeg, .imageMagick, .libvips, .pandoc, .poppler, .ghostscript, .sevenZip, .libreOffice] {
             guard let executable = ExecutableLocator.resolve(id.executableNames) else {
@@ -53,6 +36,34 @@ public struct EngineRegistry: Sendable {
 
         let routes = ConversionCatalog.buildRoutes(statuses: statuses)
         return EngineRegistry(statuses: statuses, routes: routes)
+    }
+
+    public static func discoverFinderSync() -> EngineRegistry {
+        let statuses = nativeStatuses(imageFormats: ImageCapabilities.discover())
+            .filter { $0.key == .nativeImage || $0.key == .nativePDF || $0.key == .structuredData }
+        let routes = ConversionCatalog.buildRoutes(statuses: statuses)
+        return EngineRegistry(statuses: statuses, routes: routes)
+    }
+
+    private static func nativeStatuses(imageFormats: (inputs: Set<String>, outputs: Set<String>)) -> [EngineID: EngineStatus] {
+        [
+            .nativeImage: EngineStatus(
+                id: .nativeImage,
+                supportedInputExtensions: imageFormats.inputs,
+                supportedOutputExtensions: imageFormats.outputs
+            ),
+            .nativePDF: EngineStatus(id: .nativePDF),
+            .structuredData: EngineStatus(
+                id: .structuredData,
+                supportedInputExtensions: ["json", "csv", "tsv", "xml", "yaml", "yml", "toml"],
+                supportedOutputExtensions: ["json", "csv", "tsv", "xml", "yaml", "yml", "toml"]
+            ),
+            .archive: EngineStatus(
+                id: .archive,
+                supportedInputExtensions: ["zip", "tar.gz", "tgz"],
+                supportedOutputExtensions: ["zip", "tar.gz"]
+            ),
+        ]
     }
 
     private static func probeVersion(_ executable: URL, engine: EngineID) -> String? {
