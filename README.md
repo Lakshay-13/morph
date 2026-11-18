@@ -54,7 +54,7 @@ When the user chooses Install, Morph requests the current Homebrew formula metad
 
 ### Homebrew Cask
 
-Morph is not yet available in Homebrew. The Cask draft is in [`distribution/homebrew/morph.rb`](distribution/homebrew/morph.rb). The first planned route is a Morph-maintained tap after a signed and notarized release is published. An official `homebrew/cask` submission is not currently eligible: Homebrew's policy requires public-interest thresholds for self-submissions, and this repository is new. A tap is not endorsed or supported by Homebrew. Once the release and tap exist, installation will use:
+Morph is not yet available in Homebrew. The Cask draft is in [`distribution/homebrew/morph.rb`](distribution/homebrew/morph.rb). The first planned route is a Morph-maintained tap after a signed and notarized release is published. An official `homebrew/cask` submission is not currently supportable: Homebrew's owner-submission policy normally requires 90 forks, 90 watchers or 225 stars, and this repository has no independent-interest evidence yet. A tap is not endorsed or supported by Homebrew. Once the release and tap exist, installation will use:
 
 ```sh
 brew tap Lakshay-13/tap
