@@ -25,6 +25,7 @@ final class MorphCheckSuite {
     }
 
     func run() {
+        test("Homebrew bottle-size authorization") { _ in try checkHomebrewBottleSizeAuthorization() }
         test("native images and PDF") { try checkImagesAndPDF($0) }
         test("route-aware conversion presets") { _ in try checkConversionPresets() }
         test("Finder conversion targets match the entire selection") { _ in try checkQuickConversionCatalog() }
@@ -43,6 +44,7 @@ final class MorphCheckSuite {
         test("image resize, PDF pages, and ZIP extraction") { try checkFileOperations($0) }
         test("PDF page-range extraction") { try checkPDFPageRangeExtraction($0) }
         test("image and PDF metadata inspection") { try checkMetadataInspection($0) }
+        test("safe metadata copy editing") { try checkMetadataEditing($0) }
         test("mixed batch, collisions, and source preservation") { try checkBatchAndCollisions($0) }
         test("batch rename copies preserve sources and avoid collisions") { try checkBatchRename($0) }
         test("invalid input and partial-output cleanup") { try checkInvalidInput($0) }
@@ -69,6 +71,34 @@ final class MorphCheckSuite {
             failed += 1
             print("FAIL  \(name): \(error.localizedDescription)")
         }
+    }
+
+    private func checkHomebrewBottleSizeAuthorization() throws {
+        let challenge = #"Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:homebrew/core/sevenzip:pull""#
+        let request = HomebrewBottleSizeEstimator.tokenRequest(from: challenge, formula: "sevenzip")
+        try expect(request?.httpMethod == nil || request?.httpMethod == "GET", "GHCR token requests must not mutate registry state")
+        guard let request, let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false) else {
+            throw CheckFailure("A valid GHCR pull challenge should produce a token request")
+        }
+        let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).compactMap { item in
+            item.value.map { (item.name, $0) }
+        })
+        try expect(components.scheme == "https" && components.host == "ghcr.io" && components.path == "/token", "The token endpoint must remain on the trusted GHCR host")
+        try expect(query["service"] == "ghcr.io" && query["scope"] == "repository:homebrew/core/sevenzip:pull", "The token request must be limited to this formula's pull scope")
+        try expect(HomebrewBottleSizeEstimator.tokenRequest(from: challenge, formula: "sevenzip/other") == nil, "Formula names must not alter the expected repository scope")
+        try expect(HomebrewBottleSizeEstimator.tokenRequest(from: challenge.replacingOccurrences(of: "https://ghcr.io/token", with: "https://attacker.example/token"), formula: "sevenzip") == nil, "The token endpoint must reject an untrusted host")
+        try expect(HomebrewBottleSizeEstimator.tokenRequest(from: challenge.replacingOccurrences(of: "homebrew/core/sevenzip", with: "attacker/repo/sevenzip"), formula: "sevenzip") == nil, "The token scope must reject unrelated repositories")
+        try expect(HomebrewBottleSizeEstimator.bearerToken(from: Data(#"{"token":"test-pull-token"}"#.utf8)) == "test-pull-token", "A registry pull token should be parsed")
+        try expect(HomebrewBottleSizeEstimator.bearerToken(from: Data(#"{"access_token":"test-access-token"}"#.utf8)) == "test-access-token", "An access_token response should be supported")
+        try expect(HomebrewBottleSizeEstimator.bearerToken(from: Data(#"{"token":"bad token"}"#.utf8)) == nil, "Whitespace-bearing tokens must be rejected")
+
+        let blobURL = URL(string: "https://ghcr.io/blob")!
+        let validResponse = HTTPURLResponse(url: blobURL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Length": "1883515"])!
+        let unauthorizedResponse = HTTPURLResponse(url: blobURL, statusCode: 401, httpVersion: "HTTP/1.1", headerFields: ["Content-Length": "73"])!
+        let zeroLengthResponse = HTTPURLResponse(url: blobURL, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Length": "0"])!
+        try expect(HomebrewBottleSizeEstimator.contentLength(from: validResponse) == 1_883_515, "A successful HEAD response should expose the compressed bottle length")
+        try expect(HomebrewBottleSizeEstimator.contentLength(from: unauthorizedResponse) == nil, "An authentication error body must not be mistaken for the bottle length")
+        try expect(HomebrewBottleSizeEstimator.contentLength(from: zeroLengthResponse) == nil, "A zero Content-Length is not a usable estimate")
     }
 
     private func checkImagesAndPDF(_ folder: URL) throws {
@@ -167,6 +197,31 @@ final class MorphCheckSuite {
         let noOptionalEngineRegistry = EngineRegistry(statuses: builtInStatuses, routes: routes)
         let installedOnlyTargets = QuickConversionCatalog.availableOutputs(for: [png], registry: noOptionalEngineRegistry)
         try expect(installedOnlyTargets.map(\.fileExtension) == ["jpg", "pdf"], "Finder must hide routes whose optional conversion engine is unavailable; got \(installedOnlyTargets.map(\.fileExtension))")
+
+        let finderFallbackRegistry = EngineRegistry.discoverFinderSync()
+        let zipTargets = QuickConversionCatalog.availableOutputs(
+            for: [URL(fileURLWithPath: "/tmp/source.zip")],
+            registry: finderFallbackRegistry
+        )
+        try expect(zipTargets.contains { $0.fileExtension == "tar.gz" }, "Finder's no-snapshot fallback should include the built-in ZIP → TAR.GZ route")
+
+        let customizedTargets = QuickConversionCatalog.availableOutputs(
+            for: [png],
+            registry: registry,
+            hiddenOutputExtensions: ["JPG", "pdf"]
+        )
+        try expect(customizedTargets.map(\.fileExtension) == ["webp"], "Finder should respect the user's hidden output formats; got \(customizedTargets.map(\.fileExtension))")
+        let encodedRegistry = try JSONEncoder().encode(registry)
+        let decodedRegistry = try JSONDecoder().decode(EngineRegistry.self, from: encodedRegistry)
+        try expect(decodedRegistry.routes == registry.routes, "The Finder route snapshot should survive serialization")
+        let snapshot = FinderSyncPreferencesSnapshot(
+            registry: registry,
+            hiddenOutputExtensions: ["PDF"],
+            homeDirectoryPath: "/Users/example"
+        )
+        let decodedSnapshot = try JSONDecoder().decode(FinderSyncPreferencesSnapshot.self, from: JSONEncoder().encode(snapshot))
+        try expect(decodedSnapshot.hiddenOutputExtensions == ["pdf"], "Finder preferences should preserve normalized hidden formats")
+        try expect(decodedSnapshot.homeDirectoryPath == "/Users/example", "Finder preferences should preserve the user home path")
         try expect(QuickConversionCatalog.availableOutputs(for: [], registry: registry).isEmpty, "Finder should not offer formats for an empty selection")
     }
 
@@ -880,6 +935,116 @@ final class MorphCheckSuite {
         }
     }
 
+    private func checkMetadataEditing(_ folder: URL) throws {
+        let output = folder.appendingPathComponent("output", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        let imageEdits = FileMetadataEdits(
+            title: "Updated Morph title",
+            subject: "Locally edited metadata",
+            keywords: ["morph", "local"]
+        )
+        let pdfEdits = FileMetadataEdits(
+            title: "Updated Morph title",
+            author: "Morph Checks",
+            subject: "Locally edited metadata",
+            keywords: ["morph", "local"]
+        )
+
+        let png = folder.appendingPathComponent("source.png")
+        try makePNG(at: png, width: 52, height: 34)
+        let pngHash = try sha256(png)
+        do {
+            _ = try MorphFileOperations.writeMetadataCopy(png, edits: imageEdits, outputDirectory: output)
+            throw CheckFailure("PNG metadata editing was accepted outside the documented JPEG/TIFF scope")
+        } catch is CheckFailure {
+            throw CheckFailure("PNG metadata editing was accepted outside the documented JPEG/TIFF scope")
+        } catch { }
+
+        let jpeg = try convert(png, to: "jpg", category: .image, output: output)
+        let tiff = try convert(png, to: "tiff", category: .image, output: output)
+        let jpegHash = try sha256(jpeg)
+        let tiffHash = try sha256(tiff)
+        do {
+            _ = try MorphFileOperations.writeMetadataCopy(
+                jpeg,
+                edits: FileMetadataEdits(author: "Morph Checks"),
+                outputDirectory: output
+            )
+            throw CheckFailure("Image author editing was accepted without verified native support")
+        } catch is CheckFailure {
+            throw CheckFailure("Image author editing was accepted without verified native support")
+        } catch { }
+        let jpegCopy = try MorphFileOperations.writeMetadataCopy(jpeg, edits: imageEdits, outputDirectory: output)
+        let tiffCopy = try MorphFileOperations.writeMetadataCopy(tiff, edits: imageEdits, outputDirectory: output)
+
+        for (source, copy, sourceHash) in [(jpeg, jpegCopy, jpegHash), (tiff, tiffCopy, tiffHash)] {
+            try expect(FileManager.default.fileExists(atPath: copy.path), "Image metadata output is missing")
+            let attributes = try FileManager.default.attributesOfItem(atPath: copy.path)
+            try expect((attributes[.size] as? NSNumber)?.int64Value ?? 0 > 0, "Image metadata output is empty")
+            guard let sourceImage = CGImageSourceCreateWithURL(source as CFURL, nil),
+                  let editedImage = CGImageSourceCreateWithURL(copy as CFURL, nil),
+                  let properties = CGImageSourceCopyPropertiesAtIndex(editedImage, 0, nil) as? [CFString: Any] else {
+                throw CheckFailure("Edited JPEG/TIFF could not be reopened")
+            }
+            try expect(CGImageSourceGetType(sourceImage) == CGImageSourceGetType(editedImage), "Metadata editing changed the image format")
+            try expect(CGImageSourceGetCount(sourceImage) == CGImageSourceGetCount(editedImage), "Metadata editing changed the image frame count")
+            try expect((properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue == 52, "Metadata editing changed image width")
+            try expect((properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue == 34, "Metadata editing changed image height")
+            let imageFields = Dictionary(uniqueKeysWithValues: try MorphFileOperations.inspectMetadata(copy).map { ($0.label, $0.value) })
+            try expect(imageFields["Title"] == imageEdits.title, "Image title metadata was not retained")
+            try expect(imageFields["Subject"] == imageEdits.subject, "Image subject metadata was not retained")
+            try expect(imageFields["Keywords"] != nil, "Image keywords were not retained")
+            try expect(try sha256(source) == sourceHash, "Metadata editing changed the original image")
+        }
+
+        let jpegCopyHash = try sha256(jpegCopy)
+        let jpegCollisionCopy = try MorphFileOperations.writeMetadataCopy(jpeg, edits: imageEdits, outputDirectory: output)
+        try expect(jpegCollisionCopy != jpegCopy, "Metadata editing reused an existing output path")
+        try expect(try sha256(jpegCopy) == jpegCopyHash, "A collision changed an existing metadata output")
+        try expect(try sha256(png) == pngHash, "A rejected PNG edit changed the original")
+
+        let pdf = folder.appendingPathComponent("source.pdf")
+        try makeTextPDF(at: pdf, text: "Metadata copy preserves page text")
+        let pdfHash = try sha256(pdf)
+        let pdfCopy = try MorphFileOperations.writeMetadataCopy(pdf, edits: pdfEdits, outputDirectory: output)
+        guard let sourceDocument = PDFDocument(url: pdf),
+              let editedDocument = PDFDocument(url: pdfCopy),
+              let firstPageText = editedDocument.page(at: 0)?.string else {
+            throw CheckFailure("Edited PDF could not be reopened or has no first page")
+        }
+        let pdfAttributes = editedDocument.documentAttributes ?? [:]
+        try expect(sourceDocument.pageCount == editedDocument.pageCount, "Metadata editing changed the PDF page count")
+        try expect(firstPageText.contains("Metadata copy preserves page text"), "Metadata editing changed PDF page text")
+        try expect(pdfAttributes[PDFDocumentAttribute.titleAttribute] as? String == pdfEdits.title, "PDF title was not retained")
+        try expect(pdfAttributes[PDFDocumentAttribute.authorAttribute] as? String == pdfEdits.author, "PDF author was not retained")
+        try expect(pdfAttributes[PDFDocumentAttribute.subjectAttribute] as? String == pdfEdits.subject, "PDF subject was not retained")
+        try expect(pdfAttributes[PDFDocumentAttribute.keywordsAttribute] as? [String] == pdfEdits.keywords, "PDF keywords were not retained")
+        try expect(try sha256(pdf) == pdfHash, "Metadata editing changed the original PDF")
+
+        do {
+            _ = try MorphFileOperations.writeMetadataCopy(jpeg, edits: FileMetadataEdits(), outputDirectory: output)
+            throw CheckFailure("An empty metadata edit created an output")
+        } catch is CheckFailure {
+            throw CheckFailure("An empty metadata edit created an output")
+        } catch { }
+
+        let invalidJPEG = folder.appendingPathComponent("invalid.jpg")
+        try Data("not an image".utf8).write(to: invalidJPEG)
+        let invalidHash = try sha256(invalidJPEG)
+        do {
+            _ = try MorphFileOperations.writeMetadataCopy(invalidJPEG, edits: imageEdits, outputDirectory: output)
+            throw CheckFailure("Invalid JPEG metadata input was accepted")
+        } catch is CheckFailure {
+            throw CheckFailure("Invalid JPEG metadata input was accepted")
+        } catch {
+            try expect(try sha256(invalidJPEG) == invalidHash, "Failed metadata editing changed invalid input")
+        }
+
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: output.path)
+            .filter { $0.contains(".morph-") || $0.hasSuffix(".partial") }
+        try expect(leftovers.isEmpty, "Metadata editing left staging files: \(leftovers)")
+    }
+
     private func checkPDFPageRangeExtraction(_ folder: URL) throws {
         try expect(try MorphFileOperations.parsePDFPageRanges(" 1 - 2, 4 ", pageCount: 5) == [1, 2, 4], "Page-range parser did not preserve the requested order")
         for invalidSelection in ["", "0", "3", "2-1", "1, 1", "1,,2", "a"] {
@@ -1104,10 +1269,20 @@ private struct AlwaysFailingEngine: ConversionEngine {
     }
 }
 
-do {
-    let suite = try MorphCheckSuite()
-    suite.run()
-} catch {
-    FileHandle.standardError.write(Data("Could not start Morph checks: \(error.localizedDescription)\n".utf8))
-    Darwin.exit(EXIT_FAILURE)
+if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--estimate-homebrew-bottle" {
+    let formula = CommandLine.arguments[2]
+    if let bytes = await HomebrewBottleSizeEstimator.estimate(formula: formula) {
+        print("Homebrew bottle size for \(formula): \(bytes) bytes")
+    } else {
+        FileHandle.standardError.write(Data("Could not estimate the \(formula) bottle size for this macOS and architecture.\n".utf8))
+        Darwin.exit(EXIT_FAILURE)
+    }
+} else {
+    do {
+        let suite = try MorphCheckSuite()
+        suite.run()
+    } catch {
+        FileHandle.standardError.write(Data("Could not start Morph checks: \(error.localizedDescription)\n".utf8))
+        Darwin.exit(EXIT_FAILURE)
+    }
 }

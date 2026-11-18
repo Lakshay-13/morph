@@ -10,7 +10,7 @@ MORPH_VERSION=0.1.0 MORPH_DIST_DIR="$PWD/release-output" Scripts/package-release
 
 The ZIP contains `Morph.app`, its windowless Finder conversion helper, the universal Finder Sync extension, Morph's Apache license and third-party license notices. The app bundle also carries those notices in `Contents/Resources/Legal`. The ZIP is ignored by Git. Keep the exact tested archive and its checksum together. Do not publish the current ad-hoc build.
 
-The latest local package from commit `d32f369` predates the Finder Sync submenu update. Its SHA-256 is `b3fe4dcf51cccfec0315bb120ff421b3b08b286ce11a2e582c1e07f8ba3d4d30`; it contains no Finder Sync extension. Gatekeeper rejects its ad-hoc signature. This is a local validation artifact, not a GitHub release, and must not be used for public distribution. Rebuild and retest the updated package before distributing it; the draft Cask checksum remains a placeholder until the final signed/notarized archive is available.
+The current working tree was packaged on 2026-11-18 as `dist/release-0.1.0-current/Morph-0.1.0-macOS-universal.zip`. `Morph`, `MorphQuickConvert` and `MorphFinderSync` each contain `arm64` and `x86_64` slices. Strict signature verification, ZIP integrity and SHA-256 verification passed. The artifact is still ad-hoc signed and is only a local validation package; it is not notarized, Gatekeeper-ready or suitable for public distribution. Its SHA-256 is `a6f44465c95fc7ec7e492d57f6678f57be5572432dfddd629d8a6ac0493449b`. The draft Cask hash remains a placeholder until a final signed and notarized archive is available.
 
 ## Developer ID signing and notarization
 

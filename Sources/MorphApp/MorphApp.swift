@@ -18,23 +18,53 @@ struct MorphApp: App {
 }
 
 final class MorphAppDelegate: NSObject, NSApplicationDelegate {
+    private var launchedInBackgroundMode: Bool {
+        ProcessInfo.processInfo.arguments.contains("--morph-background")
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSUpdateDynamicServices()
+        guard launchedInBackgroundMode else { return }
+        NSApp.setActivationPolicy(.accessory)
+        DispatchQueue.main.async {
+            NSApp.hide(nil)
+        }
     }
 
     func application(_ application: NSApplication, openFiles filenames: [String]) {
         let urls = filenames.map { URL(fileURLWithPath: $0) }
+        if launchedInBackgroundMode {
+            application.reply(toOpenOrPrint: .success)
+            return
+        }
         MorphModel.shared.importFiles(urls)
-        application.activate(ignoringOtherApps: true)
-        application.windows.first?.makeKeyAndOrderFront(nil)
+        showMainWindow()
         application.reply(toOpenOrPrint: .success)
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.scheme == "morph" {
+            switch url.host {
+            case "show":
+                showMainWindow()
+            case "quit":
+                application.terminate(nil)
+            default:
+                break
+            }
+        }
         let files = urls.filter(\.isFileURL)
         guard !files.isEmpty else { return }
         MorphModel.shared.importFiles(files)
-        application.activate(ignoringOtherApps: true)
-        application.windows.first?.makeKeyAndOrderFront(nil)
+        showMainWindow()
+    }
+
+    private func showMainWindow() {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            NSApp.windows.first?.makeKeyAndOrderFront(nil)
+        }
     }
 }

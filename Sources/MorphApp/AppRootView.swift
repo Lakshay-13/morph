@@ -404,8 +404,17 @@ struct ConvertView: View {
             .padding(30)
             .frame(maxWidth: 1000, alignment: .leading)
         }
-        .sheet(isPresented: $model.isShowingMetadata) {
-            MetadataInspectorSheet(reports: model.metadataReports)
+        .sheet(item: $model.metadataSheet) { sheet in
+            switch sheet {
+            case .inspector:
+                MetadataInspectorSheet(reports: model.metadataReports)
+            case .editor:
+                MetadataEditorSheet(
+                    fileCount: model.selectedFiles.count,
+                    supportsAuthor: model.selectedFiles.allSatisfy { $0.pathExtension.lowercased() == "pdf" },
+                    onSave: model.applyMetadataEdits
+                )
+            }
         }
     }
 
@@ -637,6 +646,83 @@ private struct MetadataInspectorSheet: View {
     }
 }
 
+private struct MetadataEditorSheet: View {
+    let fileCount: Int
+    let supportsAuthor: Bool
+    let onSave: (FileMetadataEdits) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var author = ""
+    @State private var subject = ""
+    @State private var keywords = ""
+
+    private var edits: FileMetadataEdits {
+        FileMetadataEdits(
+            title: optionalValue(title),
+            author: supportsAuthor ? optionalValue(author) : nil,
+            subject: optionalValue(subject),
+            keywords: parsedKeywords
+        )
+    }
+
+    private var parsedKeywords: [String]? {
+        let values = keywords.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        return values.isEmpty ? nil : values
+    }
+
+    private var hasEdits: Bool { edits.hasChanges }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Edit metadata").font(.title2.bold())
+                Text("Create a new copy for \(fileCount) selected file\(fileCount == 1 ? "" : "s"). Originals stay unchanged.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+
+            Form {
+                TextField("Title", text: $title)
+                    .accessibilityIdentifier("metadata-edit.title")
+                if supportsAuthor {
+                    TextField("Author", text: $author)
+                        .accessibilityIdentifier("metadata-edit.author")
+                }
+                TextField("Subject", text: $subject)
+                    .accessibilityIdentifier("metadata-edit.subject")
+                TextField("Keywords (comma separated)", text: $keywords)
+                    .accessibilityIdentifier("metadata-edit.keywords")
+            }
+            .formStyle(.grouped)
+
+            Text(supportsAuthor
+                 ? "Blank fields preserve existing values. Keywords replace the current keyword list."
+                 : "Blank fields preserve existing values. Keywords replace the current keyword list. Image author editing is unavailable.")
+                .font(.caption).foregroundStyle(.secondary)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Create Copies") {
+                    onSave(edits)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+                .disabled(!hasEdits)
+                .accessibilityIdentifier("metadata-edit.create-copies")
+            }
+        }
+        .padding(22)
+        .frame(minWidth: 500, idealWidth: 560, minHeight: 390)
+    }
+
+    private func optionalValue(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 private struct FormatButton: View {
     let format: MorphFormat
     let selected: Bool
@@ -706,7 +792,7 @@ struct HistoryRow: View {
 
 struct EnginesView: View {
     @EnvironmentObject private var model: MorphModel
-    private let externalEngines: [EngineID] = [.ffmpeg, .imageMagick, .pandoc, .poppler, .ghostscript, .libreOffice]
+    private let externalEngines: [EngineID] = [.ffmpeg, .imageMagick, .pandoc, .poppler, .ghostscript, .sevenZip, .libreOffice]
 
     var body: some View {
         ScrollView {
@@ -837,6 +923,56 @@ struct SettingsView: View {
                             Text(model.settings.customOutputPath ?? "No folder selected").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             Spacer()
                             Button("Choose…") { model.chooseCustomOutputFolder() }
+                        }
+                    }
+                }
+                .padding(18).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15))
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Finder conversion formats").font(.headline)
+                            Text("Choose the output types shown under Convert To. Finder only offers a type when every selected file has a supported route.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if !model.finderOutputFormats.isEmpty {
+                            Button("Show All") {
+                                model.settings.finderHiddenOutputExtensions = []
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(model.settings.finderHiddenOutputExtensions.isEmpty)
+                        }
+                    }
+
+                    if model.isDiscovering {
+                        ProgressView("Checking installed formats…")
+                            .padding(.vertical, 8)
+                    } else if model.finderOutputFormats.isEmpty {
+                        ContentUnavailableView("No Finder formats available", systemImage: "arrow.left.arrow.right", description: Text("Install or enable a conversion engine to add supported output types."))
+                            .frame(minHeight: 120)
+                    } else {
+                        ForEach(FormatCategory.allCases, id: \.self) { category in
+                            let formats = model.finderOutputFormats.filter { $0.category == category }
+                            if !formats.isEmpty {
+                                VStack(alignment: .leading, spacing: 7) {
+                                    Text(category.rawValue).font(.subheadline.weight(.semibold))
+                                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 185), alignment: .leading)], alignment: .leading, spacing: 5) {
+                                        ForEach(formats) { format in
+                                            Toggle(isOn: Binding(
+                                                get: { !model.settings.finderHiddenOutputExtensions.contains(format.fileExtension) },
+                                                set: { model.setFinderOutputEnabled(format.fileExtension, enabled: $0) }
+                                            )) {
+                                                Text("\(format.displayName) (.\(format.fileExtension))")
+                                                    .lineLimit(1)
+                                            }
+                                            .toggleStyle(.checkbox)
+                                            .accessibilityIdentifier("settings.finder-format.\(format.fileExtension)")
+                                        }
+                                    }
+                                }
+                                .padding(.top, 5)
+                            }
                         }
                     }
                 }

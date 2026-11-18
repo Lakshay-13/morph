@@ -13,6 +13,7 @@ enum OutputMode: String, CaseIterable, Identifiable, Codable {
 
 enum QuickAction: String, CaseIterable, Identifiable, Hashable {
     case inspectMetadata = "Inspect file metadata"
+    case editMetadata = "Edit metadata…"
     case resizeImages = "Resize images to 50%"
     case mergePDFs = "Merge selected PDFs"
     case extractPDFPages = "Extract PDF pages…"
@@ -26,6 +27,7 @@ enum QuickAction: String, CaseIterable, Identifiable, Hashable {
     var symbol: String {
         switch self {
         case .inspectMetadata: "info.circle"
+        case .editMetadata: "pencil"
         case .resizeImages: "arrow.down.right.and.arrow.up.left"
         case .mergePDFs: "doc.on.doc"
         case .extractPDFPages: "doc.text.magnifyingglass"
@@ -44,23 +46,26 @@ struct MorphSettings: Codable, Sendable {
     var imageQuality: Double
     var revealOutputAfterConversion: Bool
     var pdfCompressionPreset: PDFCompressionPreset
+    var finderHiddenOutputExtensions: Set<String>
 
     init(
         outputMode: OutputMode = .alongsideOriginal,
         customOutputPath: String? = nil,
         imageQuality: Double = 0.85,
         revealOutputAfterConversion: Bool = true,
-        pdfCompressionPreset: PDFCompressionPreset = .balanced
+        pdfCompressionPreset: PDFCompressionPreset = .balanced,
+        finderHiddenOutputExtensions: Set<String> = []
     ) {
         self.outputMode = outputMode
         self.customOutputPath = customOutputPath
         self.imageQuality = imageQuality
         self.revealOutputAfterConversion = revealOutputAfterConversion
         self.pdfCompressionPreset = pdfCompressionPreset
+        self.finderHiddenOutputExtensions = Set(finderHiddenOutputExtensions.map { $0.lowercased() })
     }
 
     private enum CodingKeys: String, CodingKey {
-        case outputMode, customOutputPath, imageQuality, revealOutputAfterConversion, pdfCompressionPreset
+        case outputMode, customOutputPath, imageQuality, revealOutputAfterConversion, pdfCompressionPreset, finderHiddenOutputExtensions
     }
 
     init(from decoder: Decoder) throws {
@@ -70,6 +75,7 @@ struct MorphSettings: Codable, Sendable {
         imageQuality = try values.decodeIfPresent(Double.self, forKey: .imageQuality) ?? 0.85
         revealOutputAfterConversion = try values.decodeIfPresent(Bool.self, forKey: .revealOutputAfterConversion) ?? true
         pdfCompressionPreset = try values.decodeIfPresent(PDFCompressionPreset.self, forKey: .pdfCompressionPreset) ?? .balanced
+        finderHiddenOutputExtensions = Set((try values.decodeIfPresent(Set<String>.self, forKey: .finderHiddenOutputExtensions) ?? []).map { $0.lowercased() })
     }
 }
 
@@ -86,6 +92,13 @@ struct MetadataReport: Identifiable, Sendable {
     let fileName: String
     let entries: [FileMetadataEntry]
     let error: String?
+}
+
+enum MetadataSheet: String, Identifiable {
+    case inspector
+    case editor
+
+    var id: String { rawValue }
 }
 
 @MainActor
@@ -105,7 +118,7 @@ final class MorphModel: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var history: [HistoryItem] = []
     @Published private(set) var metadataReports: [MetadataReport] = []
-    @Published var isShowingMetadata = false
+    @Published var metadataSheet: MetadataSheet?
     @Published private(set) var updatesAvailable: Set<EngineID> = []
     @Published private(set) var activeEngineAction: EngineID?
     @Published private(set) var isRunningUtilityCancellable = false
@@ -153,6 +166,28 @@ final class MorphModel: ObservableObject {
     }
 
     var availableRouteCount: Int { registry?.routes.count ?? 0 }
+    var finderOutputFormats: [MorphFormat] {
+        guard let registry else { return [] }
+        let formats = Dictionary(
+            registry.routes.map { ($0.output.fileExtension, $0.output) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return formats.values.sorted {
+            if $0.category != $1.category { return $0.category.rawValue < $1.category.rawValue }
+            if $0.displayName != $1.displayName { return $0.displayName < $1.displayName }
+            return $0.fileExtension < $1.fileExtension
+        }
+    }
+
+    func setFinderOutputEnabled(_ fileExtension: String, enabled: Bool) {
+        let normalized = fileExtension.lowercased()
+        if enabled {
+            settings.finderHiddenOutputExtensions.remove(normalized)
+        } else {
+            settings.finderHiddenOutputExtensions.insert(normalized)
+        }
+    }
+
     var activeEngineCount: Int {
         var routeEngines = Set(registry?.routes.map(\.engine) ?? [])
         if registry?.status(for: .ghostscript)?.isInstalled == true { routeEngines.insert(.ghostscript) }
@@ -168,6 +203,10 @@ final class MorphModel: ObservableObject {
         }
         if extensions.allSatisfy({ ["png", "jpg", "jpeg", "heic", "heif", "tiff", "tif", "bmp", "gif", "webp", "avif", "pdf"].contains($0) }) {
             actions.insert(.inspectMetadata, at: 0)
+        }
+        let editableMetadataExtensions: Set<String> = ["pdf", "jpg", "jpeg", "tif", "tiff"]
+        if extensions.allSatisfy(editableMetadataExtensions.contains) {
+            actions.insert(.editMetadata, at: actions.contains(.inspectMetadata) ? 1 : 0)
         }
         if extensions.count >= 2 && extensions.allSatisfy({ $0 == "pdf" }) { actions.append(.mergePDFs) }
         if extensions.count == 1, extensions[0] == "pdf" {
@@ -275,6 +314,7 @@ final class MorphModel: ObservableObject {
             await MainActor.run {
                 self.registry = freshRegistry
                 self.isDiscovering = false
+                self.publishFinderSyncPreferences()
                 onCompletion?()
             }
         }
@@ -362,6 +402,10 @@ final class MorphModel: ObservableObject {
             inspectMetadata(for: selectedFiles)
             return
         }
+        if action == .editMetadata {
+            metadataSheet = .editor
+            return
+        }
         if action == .extractPDFPages {
             requestPDFPageRange()
             return
@@ -424,6 +468,8 @@ final class MorphModel: ObservableObject {
                     outputs = [try MorphFileOperations.extractZIP(inputs[0], outputDirectory: outputDirectories[0])]
                 case .inspectMetadata:
                     outputs = []
+                case .editMetadata:
+                    outputs = []
                 case .extractPDFPages:
                     outputs = []
                 case .trimVideo:
@@ -442,6 +488,7 @@ final class MorphModel: ObservableObject {
                         case .extractZIP: .archive
                         case .compressPDF: .ghostscript
                         case .inspectMetadata: .nativeImage
+                        case .editMetadata: .nativeImage
                         case .extractPDFPages: .nativePDF
                         case .trimVideo: .ffmpeg
                         case .compressVideo: .ffmpeg
@@ -581,9 +628,65 @@ final class MorphModel: ObservableObject {
             }
             await MainActor.run {
                 self.metadataReports = reports
-                self.isShowingMetadata = true
+                self.metadataSheet = .inspector
                 self.isRunningUtility = false
                 self.conversionMessage = "Read metadata from \(reports.count) file\(reports.count == 1 ? "" : "s"). Originals were not changed."
+            }
+        }
+    }
+
+    func applyMetadataEdits(_ edits: FileMetadataEdits) {
+        guard quickActions.contains(.editMetadata), edits.hasChanges, !isRunningUtility else { return }
+        metadataSheet = nil
+        let inputs = selectedFiles
+        let currentSettings = settings
+        let outputDirectories = inputs.map { Self.outputDirectory(for: $0, settings: currentSettings) }
+        isRunningUtility = true
+        isRunningUtilityCancellable = false
+        conversionMessage = "Writing metadata copies…"
+        lastError = nil
+
+        Task.detached(priority: .userInitiated) {
+            var completed: [(URL, URL)] = []
+            var failures: [String] = []
+            for (input, outputDirectory) in zip(inputs, outputDirectories) {
+                do {
+                    let output = try MorphFileOperations.writeMetadataCopy(input, edits: edits, outputDirectory: outputDirectory)
+                    completed.append((input, output))
+                } catch {
+                    failures.append("\(input.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+            let finishedCopies = completed
+            let failedCopies = failures
+
+            await MainActor.run {
+                self.isRunningUtility = false
+                let historyItems = finishedCopies.map { input, output in
+                    HistoryItem(
+                        id: UUID(),
+                        inputName: input.lastPathComponent,
+                        outputPath: output.path,
+                        engineName: input.pathExtension.lowercased() == "pdf" ? EngineID.nativePDF.displayName : EngineID.nativeImage.displayName,
+                        date: Date()
+                    )
+                }
+                self.history.insert(contentsOf: historyItems, at: 0)
+                self.history = Array(self.history.prefix(200))
+                self.saveHistory()
+
+                if failedCopies.isEmpty {
+                    self.conversionMessage = "Created metadata copies for \(finishedCopies.count) file\(finishedCopies.count == 1 ? "" : "s"). Originals were unchanged."
+                } else if finishedCopies.isEmpty {
+                    self.conversionMessage = "Metadata editing failed. Originals were unchanged."
+                    self.lastError = failedCopies.joined(separator: "\n\n")
+                } else {
+                    self.conversionMessage = "Created \(finishedCopies.count) metadata cop\(finishedCopies.count == 1 ? "y" : "ies"); \(failedCopies.count) failed. Originals were unchanged."
+                    self.lastError = failedCopies.joined(separator: "\n\n")
+                }
+                if currentSettings.revealOutputAfterConversion, let output = finishedCopies.last?.1 {
+                    NSWorkspace.shared.activateFileViewerSelecting([output])
+                }
             }
         }
     }
@@ -921,9 +1024,11 @@ final class MorphModel: ObservableObject {
         activeEngineAction = id
         conversionMessage = "Checking \(id.displayName) download size…"
         Task { [weak self] in
-            let estimate = await Self.estimatedBottleSize(formula: formula)
+            let estimate = await HomebrewBottleSizeEstimator.estimate(formula: formula)
             guard let self else { return }
-            let estimateText = estimate.map { "The current \(formula) bottle is approximately \($0) to download; required dependencies are additional." }
+            let estimateText = estimate.map {
+                "The current \(formula) bottle is approximately \(ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)) to download; required dependencies are additional."
+            }
                 ?? "A bottle size estimate is unavailable. Homebrew will resolve the formula and dependency download sizes after confirmation."
             let reasonText = reason.map { "\($0)\n\n" } ?? ""
             confirmEngineAction(id: id, action: "Install", message: "\(reasonText)Morph will ask Homebrew to install the ‘\(formula)’ formula and any required dependencies. Homebrew verifies package checksums. \(estimateText) No engine is downloaded until you confirm here.", cancelled: {
@@ -1049,42 +1154,6 @@ final class MorphModel: ObservableObject {
         if activeEngineAction == id { activeEngineAction = nil }
     }
 
-    private static func estimatedBottleSize(formula: String) async -> String? {
-        guard let apiURL = URL(string: "https://formulae.brew.sh/api/formula/\(formula).json"),
-              let (data, apiResponse) = try? await URLSession.shared.data(from: apiURL),
-              let apiResponse = apiResponse as? HTTPURLResponse, (200..<300).contains(apiResponse.statusCode),
-              let formulaJSON = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let stable = formulaJSON["bottle"] as? [String: Any],
-              let stableInfo = stable["stable"] as? [String: Any],
-              let files = stableInfo["files"] as? [String: [String: Any]] else { return nil }
-
-        let isAppleSilicon = (try? ProcessRunner.run(executable: URL(fileURLWithPath: "/usr/bin/uname"), arguments: ["-m"]).stdout.trimmingCharacters(in: .whitespacesAndNewlines)) == "arm64"
-        let macOSName: String
-        switch ProcessInfo.processInfo.operatingSystemVersion.majorVersion {
-        case 26: macOSName = "tahoe"
-        case 15: macOSName = "sequoia"
-        case 14: macOSName = "sonoma"
-        case 13: macOSName = "ventura"
-        case 12: macOSName = "monterey"
-        default: return nil
-        }
-        let platformKey = "\(isAppleSilicon ? "arm64" : "x86_64")_\(macOSName)"
-        let candidates = files.keys.filter { $0 == platformKey }
-        for key in candidates {
-            guard let urlString = files[key]?["url"] as? String,
-                  let url = URL(string: urlString), url.scheme == "https",
-                  ["ghcr.io", "github.com", "homebrew.bintray.com"].contains(url.host?.lowercased() ?? "") else { continue }
-            var request = URLRequest(url: url)
-            request.httpMethod = "HEAD"
-            guard let (_, response) = try? await URLSession.shared.data(for: request),
-                  let response = response as? HTTPURLResponse,
-                  (200..<400).contains(response.statusCode),
-                  let length = response.value(forHTTPHeaderField: "Content-Length").flatMap(Int64.init), length > 0 else { continue }
-            return ByteCountFormatter.string(fromByteCount: length, countStyle: .file)
-        }
-        return nil
-    }
-
     private static func outputDirectory(for input: URL, settings: MorphSettings) -> URL {
         switch settings.outputMode {
         case .alongsideOriginal: input.deletingLastPathComponent()
@@ -1103,6 +1172,18 @@ final class MorphModel: ObservableObject {
 
     private func saveSettings() {
         if let data = try? JSONEncoder().encode(settings) { UserDefaults.standard.set(data, forKey: settingsKey) }
+        publishFinderSyncPreferences()
+    }
+
+    private func publishFinderSyncPreferences() {
+        guard let registry else { return }
+        let snapshot = FinderSyncPreferencesSnapshot(
+            registry: registry,
+            hiddenOutputExtensions: settings.finderHiddenOutputExtensions,
+            homeDirectoryPath: FileManager.default.homeDirectoryForCurrentUser.path
+        )
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        UserDefaults.standard.set(data, forKey: EngineRegistry.finderSyncPreferencesSnapshotKey)
     }
 
     private func loadHistory() {

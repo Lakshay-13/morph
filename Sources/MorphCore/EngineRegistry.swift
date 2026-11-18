@@ -2,7 +2,10 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-public struct EngineRegistry: Sendable {
+public struct EngineRegistry: Codable, Sendable {
+    public static let containingAppBundleIdentifier = "com.lakshaychawla.Morph"
+    public static let finderSyncPreferencesSnapshotKey = "com.lakshaychawla.Morph.finderSyncPreferencesSnapshot"
+
     public let statuses: [EngineID: EngineStatus]
     public let routes: [ConversionRoute]
 
@@ -13,6 +16,12 @@ public struct EngineRegistry: Sendable {
 
     public func status(for id: EngineID) -> EngineStatus? { statuses[id] }
     public func isAvailable(_ id: EngineID) -> Bool { statuses[id]?.isInstalled == true }
+
+    public static func loadFinderSyncPreferencesSnapshot() -> FinderSyncPreferencesSnapshot? {
+        guard let data = UserDefaults(suiteName: containingAppBundleIdentifier)?
+            .data(forKey: finderSyncPreferencesSnapshotKey) else { return nil }
+        return try? JSONDecoder().decode(FinderSyncPreferencesSnapshot.self, from: data)
+    }
 
     public static func discover() -> EngineRegistry {
         let imageFormats = ImageCapabilities.discover()
@@ -40,7 +49,7 @@ public struct EngineRegistry: Sendable {
 
     public static func discoverFinderSync() -> EngineRegistry {
         let statuses = nativeStatuses(imageFormats: ImageCapabilities.discover())
-            .filter { $0.key == .nativeImage || $0.key == .nativePDF || $0.key == .structuredData }
+            .filter { $0.key == .nativeImage || $0.key == .nativePDF || $0.key == .structuredData || $0.key == .archive }
         let routes = ConversionCatalog.buildRoutes(statuses: statuses)
         return EngineRegistry(statuses: statuses, routes: routes)
     }
@@ -406,6 +415,18 @@ private enum ConversionCatalog {
         case .ffmpeg, .pandoc, .poppler: 1
         case .imageMagick, .libvips, .ghostscript, .sevenZip, .libreOffice: 2
         }
+    }
+}
+
+public struct FinderSyncPreferencesSnapshot: Codable, Sendable {
+    public let registry: EngineRegistry
+    public let hiddenOutputExtensions: Set<String>
+    public let homeDirectoryPath: String
+
+    public init(registry: EngineRegistry, hiddenOutputExtensions: Set<String>, homeDirectoryPath: String) {
+        self.registry = registry
+        self.hiddenOutputExtensions = Set(hiddenOutputExtensions.map { $0.lowercased() })
+        self.homeDirectoryPath = homeDirectoryPath
     }
 }
 

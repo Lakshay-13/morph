@@ -15,6 +15,24 @@ public struct FileMetadataEntry: Identifiable, Hashable, Sendable {
     }
 }
 
+public struct FileMetadataEdits: Hashable, Sendable {
+    public var title: String?
+    public var author: String?
+    public var subject: String?
+    public var keywords: [String]?
+
+    public init(title: String? = nil, author: String? = nil, subject: String? = nil, keywords: [String]? = nil) {
+        self.title = title
+        self.author = author
+        self.subject = subject
+        self.keywords = keywords
+    }
+
+    public var hasChanges: Bool {
+        title != nil || author != nil || subject != nil || keywords != nil
+    }
+}
+
 public struct BatchRenameTarget: Identifiable, Hashable, Sendable {
     public let inputURL: URL
     public let outputURL: URL
@@ -94,6 +112,12 @@ public enum MorphFileOperations {
             append(tiff[kCGImagePropertyTIFFModel], label: "Camera model", to: &entries)
             append(tiff[kCGImagePropertyTIFFSoftware], label: "Software", to: &entries)
         }
+        let iptc = properties[kCGImagePropertyIPTCDictionary] as? [CFString: Any] ?? [:]
+        let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
+        append(iptc[kCGImagePropertyIPTCObjectName] ?? tiff[kCGImagePropertyTIFFImageDescription], label: "Title", to: &entries)
+        append(iptc[kCGImagePropertyIPTCByline] ?? tiff[kCGImagePropertyTIFFArtist], label: "Author", to: &entries)
+        append(iptc[kCGImagePropertyIPTCCaptionAbstract], label: "Subject", to: &entries)
+        append(iptc[kCGImagePropertyIPTCKeywords], label: "Keywords", to: &entries)
         if let gps = properties[kCGImagePropertyGPSDictionary] as? [CFString: Any],
            let latitude = gps[kCGImagePropertyGPSLatitude] as? NSNumber,
            let longitude = gps[kCGImagePropertyGPSLongitude] as? NSNumber {
@@ -102,6 +126,181 @@ public enum MorphFileOperations {
             entries.append(FileMetadataEntry(label: "Location", value: "\(latitude)° \(latitudeRef), \(longitude)° \(longitudeRef)"))
         }
         return entries
+    }
+
+    @discardableResult
+    public static func writeMetadataCopy(
+        _ input: URL,
+        edits: FileMetadataEdits,
+        outputDirectory: URL? = nil
+    ) throws -> URL {
+        guard edits.hasChanges else {
+            throw MorphError.invalidInput("Enter at least one metadata value to change.")
+        }
+        try validateMetadataEdits(edits)
+        try validateRenamableFile(input)
+
+        let fileExtension = input.pathExtension.lowercased()
+        let supportedImageExtensions: Set<String> = ["jpg", "jpeg", "tif", "tiff"]
+        guard fileExtension == "pdf" || supportedImageExtensions.contains(fileExtension) else {
+            throw MorphError.unsupportedInput(input)
+        }
+        if fileExtension != "pdf", edits.author != nil {
+            throw MorphError.invalidInput("Image author editing is not supported by the native metadata writer. Select PDFs to edit author metadata.")
+        }
+
+        let directory = outputDirectory ?? input.deletingLastPathComponent()
+        guard directory.isFileURL else {
+            throw MorphError.invalidOutput("The metadata copy destination must be a folder on this Mac.")
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let output = uniqueURL(
+            baseName: input.deletingPathExtension().lastPathComponent + "-metadata",
+            extension: fileExtension,
+            directory: directory
+        )
+        let temporary = temporaryFile(for: output)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        if fileExtension == "pdf" {
+            try writePDFMetadataCopy(input, edits: edits, temporary: temporary)
+        } else {
+            try writeImageMetadataCopy(input, edits: edits, temporary: temporary, expectedExtension: fileExtension)
+        }
+
+        try commit(temporary, to: output)
+        return output
+    }
+
+    private static func validateMetadataEdits(_ edits: FileMetadataEdits) throws {
+        let textValues = [edits.title, edits.author, edits.subject].compactMap { $0 }
+        let validKeywords = edits.keywords.map { keywords in
+            keywords.count <= 100
+                && keywords.allSatisfy { $0.utf8.count <= 256 && !$0.unicodeScalars.contains(where: { $0.value == 0 }) }
+        } ?? true
+        guard textValues.allSatisfy({ $0.utf8.count <= 4_096 && !$0.unicodeScalars.contains(where: { $0.value == 0 }) }),
+              validKeywords else {
+            throw MorphError.invalidInput("Metadata text is too long or contains an unsupported value.")
+        }
+        let keywordBytes = (edits.keywords ?? []).reduce(0) { $0 + $1.utf8.count }
+        guard keywordBytes <= 8_192 else {
+            throw MorphError.invalidInput("The combined keywords are too long.")
+        }
+    }
+
+    private static func writePDFMetadataCopy(_ input: URL, edits: FileMetadataEdits, temporary: URL) throws {
+        guard let source = PDFDocument(url: input), source.pageCount > 0 else {
+            throw MorphError.invalidInput("The selected PDF is unreadable or has no pages.")
+        }
+        let pageCount = source.pageCount
+        var attributes = source.documentAttributes ?? [:]
+        if let title = edits.title { attributes[PDFDocumentAttribute.titleAttribute] = title }
+        if let author = edits.author { attributes[PDFDocumentAttribute.authorAttribute] = author }
+        if let subject = edits.subject { attributes[PDFDocumentAttribute.subjectAttribute] = subject }
+        if let keywords = edits.keywords { attributes[PDFDocumentAttribute.keywordsAttribute] = keywords }
+        source.documentAttributes = attributes
+
+        guard source.write(to: temporary),
+              let edited = PDFDocument(url: temporary), edited.pageCount == pageCount else {
+            throw MorphError.invalidOutput("macOS could not write a valid PDF metadata copy.")
+        }
+        let writtenAttributes = edited.documentAttributes ?? [:]
+        guard pdfMetadataMatches(edits, attributes: writtenAttributes) else {
+            throw MorphError.invalidOutput("The PDF copy did not retain the requested metadata values.")
+        }
+    }
+
+    private static func pdfMetadataMatches(_ edits: FileMetadataEdits, attributes: [AnyHashable: Any]) -> Bool {
+        if let title = edits.title, attributes[PDFDocumentAttribute.titleAttribute] as? String != title { return false }
+        if let author = edits.author, attributes[PDFDocumentAttribute.authorAttribute] as? String != author { return false }
+        if let subject = edits.subject, attributes[PDFDocumentAttribute.subjectAttribute] as? String != subject { return false }
+        if let keywords = edits.keywords {
+            let stored = attributes[PDFDocumentAttribute.keywordsAttribute] as? [String]
+                ?? (attributes[PDFDocumentAttribute.keywordsAttribute] as? String).map { [$0] }
+            if stored != keywords { return false }
+        }
+        return true
+    }
+
+    private static func writeImageMetadataCopy(
+        _ input: URL,
+        edits: FileMetadataEdits,
+        temporary: URL,
+        expectedExtension: String
+    ) throws {
+        guard let source = CGImageSourceCreateWithURL(input as CFURL, nil),
+              let sourceType = CGImageSourceGetType(source),
+              let sourceProperties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
+            throw MorphError.invalidInput("macOS could not read this image's metadata.")
+        }
+        let expectedType = ["jpg", "jpeg"].contains(expectedExtension) ? UTType.jpeg.identifier : UTType.tiff.identifier
+        guard (sourceType as String) == expectedType else {
+            throw MorphError.invalidInput("The file contents do not match its JPEG or TIFF filename extension.")
+        }
+        let imageCount = CGImageSourceGetCount(source)
+        guard imageCount > 0 else {
+            throw MorphError.invalidInput("The selected image contains no readable frames.")
+        }
+
+        var iptc = sourceProperties[kCGImagePropertyIPTCDictionary] as? [CFString: Any] ?? [:]
+        if let title = edits.title { iptc[kCGImagePropertyIPTCObjectName] = title }
+        if let subject = edits.subject { iptc[kCGImagePropertyIPTCCaptionAbstract] = subject }
+        if let keywords = edits.keywords { iptc[kCGImagePropertyIPTCKeywords] = keywords }
+        var properties: [CFString: Any] = [:]
+        if edits.title != nil || edits.subject != nil || edits.keywords != nil {
+            properties[kCGImagePropertyIPTCDictionary] = iptc
+        }
+
+        let destinationOptions = [kCGImageDestinationMergeMetadata: true] as CFDictionary
+        guard let destination = CGImageDestinationCreateWithURL(
+            temporary as CFURL,
+            sourceType,
+            imageCount,
+            destinationOptions
+        ) else {
+            throw MorphError.invalidOutput("macOS could not create an image metadata copy.")
+        }
+        for index in 0..<imageCount {
+            CGImageDestinationAddImageFromSource(destination, source, index, properties as CFDictionary)
+        }
+        guard CGImageDestinationFinalize(destination),
+              let edited = CGImageSourceCreateWithURL(temporary as CFURL, nil),
+              CGImageSourceGetType(edited) == sourceType,
+              CGImageSourceGetCount(edited) == imageCount else {
+            throw MorphError.invalidOutput("macOS could not write a valid JPEG or TIFF metadata copy.")
+        }
+        for index in 0..<imageCount {
+            guard let original = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any],
+                  let written = CGImageSourceCopyPropertiesAtIndex(edited, index, nil) as? [CFString: Any] else {
+                throw MorphError.invalidOutput("macOS could not validate the written image metadata.")
+            }
+            guard (original[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue == (written[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+                  (original[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue == (written[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue else {
+                throw MorphError.invalidOutput("The image metadata copy changed its dimensions.")
+            }
+            let missingMetadata = imageMetadataMismatches(edits, properties: written)
+            guard missingMetadata.isEmpty else {
+                throw MorphError.invalidOutput("macOS did not retain these image metadata fields: \(missingMetadata.joined(separator: ", ")).")
+            }
+        }
+    }
+
+    private static func imageMetadataMismatches(_ edits: FileMetadataEdits, properties: [CFString: Any]) -> [String] {
+        let iptc = properties[kCGImagePropertyIPTCDictionary] as? [CFString: Any] ?? [:]
+        var missing: [String] = []
+        if let title = edits.title {
+            if iptc[kCGImagePropertyIPTCObjectName] as? String != title { missing.append("title (IPTC)") }
+        }
+        if let subject = edits.subject, iptc[kCGImagePropertyIPTCCaptionAbstract] as? String != subject { missing.append("subject (IPTC)") }
+        if let keywords = edits.keywords, imageStrings(iptc[kCGImagePropertyIPTCKeywords]) != keywords { missing.append("keywords (IPTC)") }
+        return missing
+    }
+
+    private static func imageStrings(_ value: Any?) -> [String]? {
+        if let values = value as? [String] { return values }
+        if let value = value as? String { return [value] }
+        if let values = value as? [NSString] { return values.map(String.init) }
+        return nil
     }
 
     private static func append(_ value: Any?, label: String, to entries: inout [FileMetadataEntry]) {

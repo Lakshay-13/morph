@@ -4,7 +4,11 @@ import Foundation
 ///
 /// A target is included only when every selected file has an installed route to it.
 public enum QuickConversionCatalog {
-    public static func availableOutputs(for inputs: [URL], registry: EngineRegistry) -> [MorphFormat] {
+    public static func availableOutputs(
+        for inputs: [URL],
+        registry: EngineRegistry,
+        hiddenOutputExtensions: Set<String> = []
+    ) -> [MorphFormat] {
         guard !inputs.isEmpty else { return [] }
 
         let outputSets = inputs.map { input in
@@ -18,8 +22,11 @@ public enum QuickConversionCatalog {
             if common.isEmpty { return [] }
         }
 
+        let hidden = Set(hiddenOutputExtensions.map { $0.lowercased() })
         let availableRoutes = registry.routes.filter {
-            common.contains($0.output.fileExtension) && registry.isAvailable($0.engine)
+            common.contains($0.output.fileExtension)
+                && !hidden.contains($0.output.fileExtension)
+                && registry.isAvailable($0.engine)
         }
         let uniqueFormats = Dictionary(availableRoutes.map { ($0.output.fileExtension, $0.output) }, uniquingKeysWith: { first, _ in first })
         return uniqueFormats.values.sorted {

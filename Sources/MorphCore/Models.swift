@@ -270,7 +270,7 @@ public enum EngineID: String, CaseIterable, Codable, Sendable {
     }
 }
 
-public struct EngineStatus: Identifiable, Sendable {
+public struct EngineStatus: Codable, Identifiable, Sendable {
     public let id: EngineID
     public let executableURL: URL?
     public let version: String?
@@ -302,7 +302,7 @@ public struct EngineStatus: Identifiable, Sendable {
     }
 }
 
-public struct ConversionRoute: Hashable, Identifiable, Sendable {
+public struct ConversionRoute: Codable, Hashable, Identifiable, Sendable {
     public let inputExtension: String
     public let output: MorphFormat
     public let engine: EngineID
