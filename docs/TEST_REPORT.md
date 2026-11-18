@@ -92,7 +92,7 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 
 ## GitHub Actions architecture coverage
 
-[Latest macOS CI run 44224494535](https://github.com/Lakshay-13/morph/actions/runs/44224494535) on commit `2d90270` completed successfully.
+[macOS CI run 44225822929](https://github.com/Lakshay-13/morph/actions/runs/44225822929) on commit `2912c87` completed successfully.
 
 | Runner | Validation | Result |
 |---|---|---|
