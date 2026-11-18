@@ -94,8 +94,12 @@ jobs:
           set -euo pipefail
           app="$RUNNER_TEMP/morph-dist/Morph.app"
           archive="$RUNNER_TEMP/morph-dist/Morph-0.1.0-macOS-universal.zip"
+          helper="$app/Contents/Helpers/MorphQuickConvert.app"
           archs="$(lipo -archs "$app/Contents/MacOS/Morph")"
           [[ "$archs" == *arm64* && "$archs" == *x86_64* ]]
+          helper_archs="$(lipo -archs "$helper/Contents/MacOS/MorphQuickConvert")"
+          [[ "$helper_archs" == *arm64* && "$helper_archs" == *x86_64* ]]
+          /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$helper/Contents/Info.plist" | grep -Fxq true
           codesign --verify --deep --strict "$app"
           test -s "$app/Contents/Resources/Legal/LICENSE"
           test -s "$app/Contents/Resources/Legal/THIRD_PARTY.md"
@@ -105,6 +109,7 @@ jobs:
           test -s "$app/Contents/Resources/Legal/THIRD_PARTY_LICENSES/toml++-MIT.txt"
           unzip -Z1 "$archive" | grep -Fxq 'Morph-0.1.0/LICENSE'
           unzip -Z1 "$archive" | grep -Fxq 'Morph-0.1.0/THIRD_PARTY_LICENSES/LibYAML-MIT.txt'
+          unzip -Z1 "$archive" | grep -Fxq 'Morph-0.1.0/Morph.app/Contents/Helpers/MorphQuickConvert.app/Contents/MacOS/MorphQuickConvert'
           if unzip -Z1 "$archive" | grep -Eq '(^|/)\._'; then exit 1; fi
           unzip -tq "$archive"
           shasum -a 256 -c "$archive.sha256"
