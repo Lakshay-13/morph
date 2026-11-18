@@ -33,6 +33,91 @@ public enum PDFCompressionPreset: String, CaseIterable, Codable, Identifiable, S
     }
 }
 
+public enum VideoCompressionQuality: String, CaseIterable, Codable, Identifiable, Sendable {
+    case compact
+    case balanced
+    case higherQuality
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .compact: "Smaller file"
+        case .balanced: "Balanced"
+        case .higherQuality: "Higher quality"
+        }
+    }
+
+    var ffmpegCRF: Int {
+        switch self {
+        case .compact: 30
+        case .balanced: 26
+        case .higherQuality: 22
+        }
+    }
+
+    var audioBitrate: String {
+        switch self {
+        case .compact: "96k"
+        case .balanced: "128k"
+        case .higherQuality: "192k"
+        }
+    }
+}
+
+public enum VideoResolutionLimit: String, CaseIterable, Codable, Identifiable, Sendable {
+    case fullHD
+    case hd
+    case original
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .fullHD: "Up to 1080p"
+        case .hd: "Up to 720p"
+        case .original: "Keep original size"
+        }
+    }
+
+    var ffmpegFilter: String {
+        switch self {
+        case .fullHD:
+            "scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
+        case .hd:
+            "scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
+        case .original:
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+        }
+    }
+
+    var maximumWidth: Int? {
+        switch self {
+        case .fullHD: 1920
+        case .hd: 1280
+        case .original: nil
+        }
+    }
+
+    var maximumHeight: Int? {
+        switch self {
+        case .fullHD: 1080
+        case .hd: 720
+        case .original: nil
+        }
+    }
+}
+
+public struct VideoCompressionOptions: Hashable, Sendable {
+    public let quality: VideoCompressionQuality
+    public let resolutionLimit: VideoResolutionLimit
+
+    public init(quality: VideoCompressionQuality = .balanced, resolutionLimit: VideoResolutionLimit = .fullHD) {
+        self.quality = quality
+        self.resolutionLimit = resolutionLimit
+    }
+}
+
 public enum ConversionPreset: String, CaseIterable, Codable, Identifiable, Sendable {
     case imagesToJPEG
     case imagesToWebP80

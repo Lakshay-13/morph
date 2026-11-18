@@ -17,6 +17,7 @@ enum QuickAction: String, CaseIterable, Identifiable, Hashable {
     case mergePDFs = "Merge selected PDFs"
     case extractPDFPages = "Extract PDF pages…"
     case trimVideo = "Trim video…"
+    case compressVideo = "Compress video…"
     case splitPDF = "Split PDF into pages"
     case compressPDF = "Compress PDF"
     case extractZIP = "Extract ZIP archive"
@@ -29,6 +30,7 @@ enum QuickAction: String, CaseIterable, Identifiable, Hashable {
         case .mergePDFs: "doc.on.doc"
         case .extractPDFPages: "doc.text.magnifyingglass"
         case .trimVideo: "scissors"
+        case .compressVideo: "arrow.down.right.and.arrow.up.left"
         case .splitPDF: "square.split.2x1"
         case .compressPDF: "arrow.down.doc"
         case .extractZIP: "archivebox"
@@ -174,6 +176,16 @@ final class MorphModel: ObservableObject {
             actions.append(.compressPDF)
         }
         let videoExtensions: Set<String> = ["mp4", "m4v", "mov", "mkv", "avi", "webm", "mpeg", "mpg", "wmv", "flv", "3gp", "3g2"]
+        if !extensions.isEmpty, extensions.allSatisfy(videoExtensions.contains) {
+            if let status = registry?.status(for: .ffmpeg), status.isInstalled {
+                if status.supportedOutputExtensions.contains("mp4"),
+                   extensions.allSatisfy(status.supportedInputExtensions.contains) {
+                    actions.append(.compressVideo)
+                }
+            } else {
+                actions.append(.compressVideo)
+            }
+        }
         if extensions.count == 1, let inputExtension = extensions.first, videoExtensions.contains(inputExtension) {
             if let status = registry?.status(for: .ffmpeg), status.isInstalled {
                 if status.supportedInputExtensions.contains(inputExtension), status.supportedOutputExtensions.contains("mp4") {
@@ -358,6 +370,10 @@ final class MorphModel: ObservableObject {
             requestVideoTrim()
             return
         }
+        if action == .compressVideo {
+            requestVideoCompression()
+            return
+        }
         if action == .compressPDF, isDiscovering {
             conversionMessage = "Checking local conversion engines…"
             return
@@ -380,8 +396,8 @@ final class MorphModel: ObservableObject {
         let outputDirectories = inputs.map { Self.outputDirectory(for: $0, settings: currentSettings) }
         isRunningUtility = true
         let utilityToken = CancellationToken()
-        utilityCancellation = action == .compressPDF ? utilityToken : nil
-        isRunningUtilityCancellable = action == .compressPDF
+        utilityCancellation = [.compressPDF, .compressVideo].contains(action) ? utilityToken : nil
+        isRunningUtilityCancellable = [.compressPDF, .compressVideo].contains(action)
         conversionMessage = "Preparing \(action.rawValue.lowercased())…"
         lastError = nil
 
@@ -412,6 +428,8 @@ final class MorphModel: ObservableObject {
                     outputs = []
                 case .trimVideo:
                     outputs = []
+                case .compressVideo:
+                    outputs = []
                 }
                 await MainActor.run {
                     self.isRunningUtility = false
@@ -426,6 +444,7 @@ final class MorphModel: ObservableObject {
                         case .inspectMetadata: .nativeImage
                         case .extractPDFPages: .nativePDF
                         case .trimVideo: .ffmpeg
+                        case .compressVideo: .ffmpeg
                         default: .nativePDF
                         }
                         return HistoryItem(id: UUID(), inputName: inputs[0].lastPathComponent, outputPath: $0.path, engineName: engine.displayName, date: Date())
@@ -443,7 +462,9 @@ final class MorphModel: ObservableObject {
                     self.isRunningUtilityCancellable = false
                     if let morphError = error as? MorphError, case .cancelled = morphError {
                         self.lastError = nil
-                        self.conversionMessage = "PDF compression cancelled. The original was left unchanged."
+                        self.conversionMessage = action == .compressVideo
+                            ? "Video compression cancelled. Originals were left unchanged."
+                            : "PDF compression cancelled. The original was left unchanged."
                     } else {
                         self.lastError = error.localizedDescription
                         self.conversionMessage = "The operation could not be completed."
@@ -646,6 +667,161 @@ final class MorphModel: ObservableObject {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         trimVideo(start: startField.stringValue, end: endField.stringValue, input: input)
+    }
+
+    private func requestVideoCompression() {
+        let inputs = selectedFiles
+        guard !inputs.isEmpty else { return }
+        guard !isDiscovering else {
+            conversionMessage = "Checking local video engines…"
+            return
+        }
+
+        let qualityPicker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 210, height: 26), pullsDown: false)
+        qualityPicker.addItems(withTitles: VideoCompressionQuality.allCases.map(\.displayName))
+        qualityPicker.selectItem(at: VideoCompressionQuality.allCases.firstIndex(of: .balanced) ?? 0)
+        qualityPicker.setAccessibilityLabel("Compression quality")
+        qualityPicker.setAccessibilityIdentifier("video-compression.quality")
+        let resolutionPicker = NSPopUpButton(frame: qualityPicker.frame, pullsDown: false)
+        resolutionPicker.addItems(withTitles: VideoResolutionLimit.allCases.map(\.displayName))
+        resolutionPicker.selectItem(at: VideoResolutionLimit.allCases.firstIndex(of: .fullHD) ?? 0)
+        resolutionPicker.setAccessibilityLabel("Maximum video resolution")
+        resolutionPicker.setAccessibilityIdentifier("video-compression.resolution")
+
+        let qualityRow = NSStackView(views: [NSTextField(labelWithString: "Quality"), qualityPicker])
+        qualityRow.alignment = .centerY
+        qualityRow.spacing = 10
+        let resolutionRow = NSStackView(views: [NSTextField(labelWithString: "Maximum resolution"), resolutionPicker])
+        resolutionRow.alignment = .centerY
+        resolutionRow.spacing = 10
+        let controls = NSStackView(views: [qualityRow, resolutionRow])
+        controls.orientation = .vertical
+        controls.alignment = .leading
+        controls.spacing = 8
+
+        let alert = NSAlert()
+        alert.messageText = inputs.count == 1 ? "Compress video" : "Compress videos"
+        alert.informativeText = "Morph will re-encode the selected video\(inputs.count == 1 ? "" : "s") as H.264/AAC MP4. Quality and size can change, subtitles may be dropped, and some metadata may not carry over. The output size is reported after compression; some already-compressed files may become larger. Originals remain unchanged."
+        alert.alertStyle = .informational
+        alert.accessoryView = controls
+        alert.addButton(withTitle: "Compress")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let qualities = VideoCompressionQuality.allCases
+        let resolutions = VideoResolutionLimit.allCases
+        guard qualities.indices.contains(qualityPicker.indexOfSelectedItem),
+              resolutions.indices.contains(resolutionPicker.indexOfSelectedItem) else { return }
+        let quality = qualities[qualityPicker.indexOfSelectedItem]
+        let resolution = resolutions[resolutionPicker.indexOfSelectedItem]
+        compressVideo(inputs, options: VideoCompressionOptions(quality: quality, resolutionLimit: resolution))
+    }
+
+    private func compressVideo(_ inputs: [URL], options: VideoCompressionOptions) {
+        guard !inputs.isEmpty else { return }
+        guard let status = registry?.status(for: .ffmpeg), status.isInstalled else {
+            selectedSection = .engines
+            installEngine(
+                .ffmpeg,
+                reason: "FFmpeg is required to compress video to H.264/AAC MP4. It also enables local audio/video conversion, trimming and audio extraction.",
+                onSuccess: { [weak self] in
+                    self?.selectedSection = .convert
+                    self?.runVideoCompression(inputs: inputs, options: options)
+                },
+                onCancel: { [weak self] in self?.selectedSection = .convert }
+            )
+            return
+        }
+        guard status.supportedOutputExtensions.contains("mp4"),
+              inputs.allSatisfy({ status.supportedInputExtensions.contains($0.pathExtension.lowercased()) }) else {
+            lastError = "The installed FFmpeg build cannot compress every selected video to MP4."
+            conversionMessage = "Video compression is unavailable for this selection."
+            return
+        }
+        runVideoCompression(inputs: inputs, options: options)
+    }
+
+    private func runVideoCompression(inputs: [URL], options: VideoCompressionOptions) {
+        guard !isConverting, !isRunningUtility, activeEngineAction == nil else { return }
+        let currentSettings = settings
+        let outputDirectories = inputs.map { Self.outputDirectory(for: $0, settings: currentSettings) }
+        let token = CancellationToken()
+        isRunningUtility = true
+        isRunningUtilityCancellable = true
+        utilityCancellation = token
+        conversionMessage = "Preparing video compression…"
+        lastError = nil
+
+        Task.detached(priority: .userInitiated) {
+            var completed: [(input: URL, output: URL)] = []
+            var failures: [String] = []
+            var inputBytes: Int64 = 0
+            var outputBytes: Int64 = 0
+
+            for (index, input) in inputs.enumerated() {
+                if token.isCancelled { break }
+                await MainActor.run {
+                    self.conversionMessage = "Compressing video \(index + 1) of \(inputs.count): \(input.lastPathComponent)"
+                }
+                do {
+                    let output = try MorphFileOperations.compressVideo(
+                        input,
+                        options: options,
+                        outputDirectory: outputDirectories[index],
+                        cancellation: token
+                    )
+                    let sourceSize = (try? FileManager.default.attributesOfItem(atPath: input.path)[.size] as? NSNumber)?.int64Value ?? 0
+                    let outputSize = (try? FileManager.default.attributesOfItem(atPath: output.path)[.size] as? NSNumber)?.int64Value ?? 0
+                    inputBytes += sourceSize
+                    outputBytes += outputSize
+                    completed.append((input, output))
+                } catch {
+                    if !token.isCancelled { failures.append("\(input.lastPathComponent): \(error.localizedDescription)") }
+                }
+            }
+
+            let finishedResults = completed
+            let finishedFailures = failures
+            let originalTotalBytes = inputBytes
+            let compressedTotalBytes = outputBytes
+            await MainActor.run {
+                self.isRunningUtility = false
+                self.isRunningUtilityCancellable = false
+                self.utilityCancellation = nil
+                if !finishedResults.isEmpty {
+                    self.history.insert(contentsOf: finishedResults.map {
+                        HistoryItem(id: UUID(), inputName: $0.input.lastPathComponent, outputPath: $0.output.path, engineName: EngineID.ffmpeg.displayName, date: Date())
+                    }, at: 0)
+                    self.history = Array(self.history.prefix(200))
+                    self.saveHistory()
+                }
+                if token.isCancelled {
+                    self.conversionMessage = finishedResults.isEmpty
+                        ? "Video compression cancelled. Originals were left unchanged."
+                        : "Cancelled after creating \(finishedResults.count) compressed \(finishedResults.count == 1 ? "copy" : "copies"). Completed outputs remain; originals were left unchanged."
+                } else if finishedFailures.isEmpty {
+                    self.conversionMessage = "Created \(finishedResults.count) compressed MP4 \(finishedResults.count == 1 ? "copy" : "copies"). \(Self.videoSizeSummary(inputBytes: originalTotalBytes, outputBytes: compressedTotalBytes))"
+                } else {
+                    self.lastError = finishedFailures.joined(separator: "\n\n")
+                    self.conversionMessage = "Created \(finishedResults.count) output\(finishedResults.count == 1 ? "" : "s"); \(finishedFailures.count) video\(finishedFailures.count == 1 ? "" : "s") failed. \(Self.videoSizeSummary(inputBytes: originalTotalBytes, outputBytes: compressedTotalBytes))"
+                }
+                if currentSettings.revealOutputAfterConversion, let output = finishedResults.last?.output {
+                    NSWorkspace.shared.activateFileViewerSelecting([output])
+                }
+            }
+        }
+    }
+
+    private static func videoSizeSummary(inputBytes: Int64, outputBytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let original = formatter.string(fromByteCount: inputBytes)
+        let compressed = formatter.string(fromByteCount: outputBytes)
+        if outputBytes < inputBytes, inputBytes > 0 {
+            let reduction = Int((1 - Double(outputBytes) / Double(inputBytes)) * 100)
+            return "\(original) → \(compressed) (\(reduction)% smaller)."
+        }
+        if outputBytes > inputBytes { return "\(original) → \(compressed); the output is larger." }
+        return "\(original) → \(compressed); file size is unchanged."
     }
 
     private func trimVideo(start: String, end: String, input: URL) {

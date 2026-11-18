@@ -487,6 +487,63 @@ public enum MorphFileOperations {
         return output
     }
 
+    @discardableResult
+    public static func compressVideo(
+        _ input: URL,
+        options: VideoCompressionOptions = VideoCompressionOptions(),
+        outputDirectory: URL? = nil,
+        cancellation: CancellationToken? = nil
+    ) throws -> URL {
+        guard FileManager.default.fileExists(atPath: input.path) else {
+            throw MorphError.invalidInput("The selected video is no longer available.")
+        }
+        guard let ffmpeg = ExecutableLocator.resolve(["ffmpeg"]),
+              let ffprobe = ExecutableLocator.resolve(["ffprobe"]) else {
+            throw MorphError.missingEngine(.ffmpeg)
+        }
+
+        let sourceDuration = try mediaDuration(input, ffprobe: ffprobe, cancellation: cancellation)
+        let sourceDimensions = try mediaDimensions(input, ffprobe: ffprobe, cancellation: cancellation)
+        let directory = outputDirectory ?? input.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let output = uniqueURL(baseName: input.deletingPathExtension().lastPathComponent + "-compressed", extension: "mp4", directory: directory)
+        let temporary = temporaryFile(for: output)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+
+        let result = try ProcessRunner.run(executable: ffmpeg, arguments: [
+            "-hide_banner", "-loglevel", "error", "-nostdin", "-n",
+            "-i", input.path,
+            "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0", "-map_chapters", "0",
+            "-vf", options.resolutionLimit.ffmpegFilter,
+            "-c:v", "libx264", "-preset", "medium", "-crf", String(options.quality.ffmpegCRF),
+            "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", options.quality.audioBitrate,
+            "-movflags", "+faststart", "-f", "mp4", temporary.path,
+        ], cancellation: cancellation)
+        guard result.status == 0 else {
+            throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "FFmpeg could not compress this video."
+                : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        try OutputValidator.validate(temporary, format: MorphFormat("mp4", "MP4", .video), engine: .ffmpeg)
+        let outputDuration = try mediaDuration(temporary, ffprobe: ffprobe, cancellation: cancellation)
+        guard abs(outputDuration - sourceDuration) <= max(0.5, sourceDuration * 0.02) else {
+            throw MorphError.invalidOutput("FFmpeg produced a compressed video with an unexpected duration.")
+        }
+        let outputDimensions = try mediaDimensions(temporary, ffprobe: ffprobe, cancellation: cancellation)
+        let maximumWidth = min(sourceDimensions.width, options.resolutionLimit.maximumWidth ?? sourceDimensions.width)
+        let maximumHeight = min(sourceDimensions.height, options.resolutionLimit.maximumHeight ?? sourceDimensions.height)
+        guard outputDimensions.width <= maximumWidth,
+              outputDimensions.height <= maximumHeight,
+              outputDimensions.width > 0,
+              outputDimensions.height > 0 else {
+            throw MorphError.invalidOutput("FFmpeg produced video dimensions outside the selected resolution limit.")
+        }
+        if cancellation?.isCancelled == true { throw MorphError.cancelled }
+        try commit(temporary, to: output)
+        return output
+    }
+
     private static func validateArchivePaths(_ listing: String) throws {
         for line in listing.split(separator: "\n") {
             let path = String(line).replacingOccurrences(of: "\\", with: "/")
@@ -529,6 +586,19 @@ public enum MorphFileOperations {
             throw MorphError.invalidInput("FFprobe could not read the video's duration.")
         }
         return duration
+    }
+
+    private static func mediaDimensions(_ input: URL, ffprobe: URL, cancellation: CancellationToken?) throws -> (width: Int, height: Int) {
+        let result = try ProcessRunner.run(executable: ffprobe, arguments: [
+            "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+            "-of", "csv=s=x:p=0", input.path,
+        ], cancellation: cancellation)
+        let dimensions = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "x")
+        guard result.status == 0, dimensions.count == 2,
+              let width = Int(dimensions[0]), let height = Int(dimensions[1]), width > 0, height > 0 else {
+            throw MorphError.invalidInput("FFprobe could not read a video stream and its dimensions.")
+        }
+        return (width, height)
     }
 
     private static func uniqueURL(baseName: String, extension fileExtension: String, directory: URL, isDirectory: Bool = false) -> URL {

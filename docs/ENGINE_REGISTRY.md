@@ -31,6 +31,8 @@ LibreOffice routes are constrained to text-document, presentation or spreadsheet
 
 PDF compression is an operation adapter rather than a PDF → PDF conversion route. The Ghostscript executable remains external; invocation uses `-dSAFER`, fixed quality presets, an isolated staged output and PDFKit page-count validation. When Ghostscript is absent, the app asks for explicit approval before installing its Homebrew formula and retries the requested compression only after rediscovery succeeds.
 
+Video compression is also an operation adapter rather than a format edge. It requires a detected FFmpeg route from each selected input to MP4, uses fixed H.264/AAC arguments, supports batch inputs and user-selected quality/resolution limits, and validates output media duration and dimensions before publishing collision-safe copies. If FFmpeg is missing, Morph requests explicit install consent and resumes the selected operation only after rediscovery succeeds.
+
 ## Engine contract
 
 `ConversionEngine.convert(context:)` is synchronous and runs on a background task. It should throw `MorphError` with a useful message, honor `context.cancellation`, never replace the original, and never publish a partial destination. When more than one route exists, the service tries them in deterministic priority order and falls back after an adapter failure. New adapters may be supplied to `ConversionService` for tests; they augment the default adapters and can replace one by engine ID.

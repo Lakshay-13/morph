@@ -29,6 +29,7 @@ final class MorphCheckSuite {
         test("route-aware conversion presets") { _ in try checkConversionPresets() }
         test("audio and video with FFmpeg") { try checkAudioVideo($0) }
         test("video trimming") { try checkVideoTrimming($0) }
+        test("video compression") { try checkVideoCompression($0) }
         test("documents and PDF text") { try checkDocuments($0) }
         test("LibreOffice routes stay within compatible format families") { _ in try checkLibreOfficeRoutes() }
         test("PDF compression with Ghostscript") { try checkPDFCompression($0) }
@@ -209,6 +210,87 @@ final class MorphCheckSuite {
         let secondTrim = try MorphFileOperations.trimVideo(input, startSeconds: 0.25, endSeconds: 0.9, outputDirectory: outputDirectory)
         try expect(secondTrim.lastPathComponent == "trim-source-trimmed-2.mp4", "Repeated video trim did not choose a collision-safe output name")
         try expect(try sha256(input) == sourceHash, "Video trimming changed the original source")
+    }
+
+    private func checkVideoCompression(_ folder: URL) throws {
+        guard let ffmpeg = registry.status(for: .ffmpeg)?.executableURL, registry.isAvailable(.ffmpeg),
+              let ffprobe = ExecutableLocator.resolve(["ffprobe"]) else {
+            throw CheckSkip("FFmpeg/FFprobe is not installed")
+        }
+        let input = folder.appendingPathComponent("compression-source.mp4")
+        let generated = try ProcessRunner.run(executable: ffmpeg, arguments: [
+            "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=24:duration=2",
+            "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+            "-shortest", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "5", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "320k", input.path,
+        ])
+        try expect(generated.status == 0, "Could not generate compression fixture: \(generated.stderr)")
+        let sourceHash = try sha256(input)
+        let sourceSize = try Data(contentsOf: input).count
+        let outputDirectory = folder.appendingPathComponent("output", isDirectory: true)
+        let compressed = try MorphFileOperations.compressVideo(
+            input,
+            options: VideoCompressionOptions(quality: .balanced, resolutionLimit: .hd),
+            outputDirectory: outputDirectory
+        )
+        try OutputValidator.validate(compressed, format: MorphFormat("mp4", "MP4", .video), engine: .ffmpeg)
+
+        let probe = try ProcessRunner.run(executable: ffprobe, arguments: [
+            "-v", "error", "-show_entries", "stream=codec_type,codec_name,width,height",
+            "-of", "json", compressed.path,
+        ])
+        guard probe.status == 0,
+              let json = try JSONSerialization.jsonObject(with: Data(probe.stdout.utf8)) as? [String: Any],
+              let streams = json["streams"] as? [[String: Any]],
+              let stream = streams.first(where: { $0["codec_type"] as? String == "video" }),
+              let codec = stream["codec_name"] as? String,
+              let width = stream["width"] as? Int, let height = stream["height"] as? Int else {
+            throw CheckFailure("FFprobe could not validate compressed video properties: \(probe.stderr)")
+        }
+        let audioCodec = streams.first(where: { $0["codec_type"] as? String == "audio" })?["codec_name"] as? String
+        try expect(codec == "h264", "Video compression did not encode H.264")
+        try expect(audioCodec == "aac", "Video compression did not encode the audio stream as AAC")
+        try expect(width <= 1280 && height <= 720 && width > 0 && height > 0, "Compressed video exceeded the selected 720p limit")
+        try expect(try Data(contentsOf: compressed).count < sourceSize, "The high-bitrate fixture was not reduced in size")
+        let sourceDuration = try probeDuration(input, ffprobe: ffprobe)
+        let outputDuration = try probeDuration(compressed, ffprobe: ffprobe)
+        try expect(abs(sourceDuration - outputDuration) <= 0.25, "Video compression changed the source duration")
+        try expect(try sha256(input) == sourceHash, "Video compression changed the original source")
+
+        let second = try MorphFileOperations.compressVideo(
+            input,
+            options: VideoCompressionOptions(quality: .higherQuality, resolutionLimit: .original),
+            outputDirectory: outputDirectory
+        )
+        try expect(second.lastPathComponent == "compression-source-compressed-2.mp4", "Repeated video compression did not choose a collision-safe output name")
+        let remaining = try FileManager.default.contentsOfDirectory(atPath: outputDirectory.path)
+        try expect(!remaining.contains(where: { $0.hasSuffix(".partial") }), "Video compression left a partial output")
+
+        let invalid = folder.appendingPathComponent("invalid.mp4")
+        try "not a video".write(to: invalid, atomically: true, encoding: .utf8)
+        let beforeInvalid = try FileManager.default.contentsOfDirectory(atPath: outputDirectory.path)
+        do {
+            _ = try MorphFileOperations.compressVideo(invalid, outputDirectory: outputDirectory)
+            throw CheckFailure("Invalid video input was accepted for compression")
+        } catch let failure as CheckFailure {
+            throw failure
+        } catch {
+            // Invalid media must fail before a final output is committed.
+        }
+        try expect(try FileManager.default.contentsOfDirectory(atPath: outputDirectory.path) == beforeInvalid, "Invalid video compression left an output behind")
+        try expect(try sha256(input) == sourceHash, "A failed video compression changed the original source")
+    }
+
+    private func probeDuration(_ video: URL, ffprobe: URL) throws -> Double {
+        let result = try ProcessRunner.run(executable: ffprobe, arguments: [
+            "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", video.path,
+        ])
+        guard result.status == 0,
+              let duration = Double(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw CheckFailure("FFprobe could not read video duration: \(result.stderr)")
+        }
+        return duration
     }
 
     private func checkDocuments(_ folder: URL) throws {
