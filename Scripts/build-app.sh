@@ -7,6 +7,7 @@ BUILD_ARCH="${MORPH_BUILD_ARCH:-$(uname -m)}"
 APP_VERSION="${MORPH_VERSION:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$REPO_ROOT/Resources/Info.plist")}"
 APP_PATH="$DIST_ROOT/Morph.app"
 ICON_SOURCE="$REPO_ROOT/morph-logo.png"
+MENUBAR_ICON_GENERATOR="$REPO_ROOT/Scripts/generate-menubar-icon.swift"
 SIGN_IDENTITY="${MORPH_CODESIGN_IDENTITY:--}"
 
 if [[ ! "$APP_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
@@ -20,6 +21,10 @@ if [[ -e "$APP_PATH" ]]; then
 fi
 if [[ ! -f "$ICON_SOURCE" ]]; then
   printf 'Missing app icon source: %s\n' "$ICON_SOURCE" >&2
+  exit 1
+fi
+if [[ ! -f "$MENUBAR_ICON_GENERATOR" ]]; then
+  printf 'Missing menu-bar icon generator: %s\n' "$MENUBAR_ICON_GENERATOR" >&2
   exit 1
 fi
 mkdir -p "$DIST_ROOT"
@@ -101,6 +106,7 @@ cp "$REPO_ROOT/Resources/Info.plist" "$APP_PATH/Contents/Info.plist"
 cp "$REPO_ROOT/Resources/MorphQuickConvert-Info.plist" "$HELPER_APP_PATH/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $APP_VERSION" "$HELPER_APP_PATH/Contents/Info.plist"
 cp "$ICON_SOURCE" "$APP_PATH/Contents/Resources/morph-logo.png"
+swift "$MENUBAR_ICON_GENERATOR" "$APP_PATH/Contents/Resources/morph-menubar.png"
 ditto "$FINDER_SYNC_PRODUCT" "$FINDER_SYNC_APP_PATH"
 mkdir -p "$APP_PATH/Contents/Resources/Legal/THIRD_PARTY_LICENSES"
 cp "$REPO_ROOT/LICENSE" "$APP_PATH/Contents/Resources/Legal/LICENSE"

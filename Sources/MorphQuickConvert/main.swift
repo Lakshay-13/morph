@@ -43,6 +43,14 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
             .standardizedFileURL
     }
 
+    private var menuBarImage: NSImage? {
+        let imageURL = mainApplicationURL.appendingPathComponent("Contents/Resources/morph-menubar.png")
+        guard let image = NSImage(contentsOf: imageURL) else { return nil }
+        image.isTemplate = true
+        image.size = NSSize(width: 18, height: 18)
+        return image
+    }
+
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSAppleEventManager.shared().setEventHandler(
             self,
@@ -136,7 +144,7 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
             }
             if let inputValidationMessage {
                 statusMessageItem?.title = inputValidationMessage
-                statusItem?.button?.title = "Morph !"
+                statusItem?.button?.title = "!"
                 continue
             }
             logger.info("Validated \(inputs.count, privacy: .public) Finder-selected paths; output .\(request.outputExtension, privacy: .public).")
@@ -276,7 +284,12 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
     private func installStatusItemIfNeeded() {
         guard statusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "Morph"
+        item.button?.image = menuBarImage ?? NSImage(
+            systemSymbolName: "arrow.triangle.2.circlepath",
+            accessibilityDescription: "Morph"
+        )
+        item.button?.imagePosition = .imageLeading
+        item.button?.title = ""
         item.button?.toolTip = "Morph is ready for Finder conversions"
         let menu = NSMenu()
         let message = NSMenuItem(title: "Ready for Finder conversions", action: nil, keyEquivalent: "")
@@ -309,7 +322,7 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateProgress(index: Int, total: Int, fileName: String?) {
         let message = fileName.map { "Converting \(index) of \(total): \($0)" } ?? "Preparing conversion…"
-        statusItem?.button?.title = "Morph \(min(index, total))/\(total)"
+        statusItem?.button?.title = "\(min(index, total))/\(total)"
         statusItem?.button?.toolTip = message
         statusMessageItem?.title = message
     }
@@ -383,7 +396,7 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
         logger.info("Conversion finished: \(results.count, privacy: .public) succeeded, \(failures.count, privacy: .public) failed, cancelled: \(cancelled, privacy: .public).")
 
         statusMessageItem?.title = summary
-        statusItem?.button?.title = cancelled ? "Morph —" : (failures.isEmpty ? "Morph ✓" : "Morph !")
+        statusItem?.button?.title = cancelled ? "—" : (failures.isEmpty ? "✓" : "!")
         cancelMenuItem?.isHidden = true
         deliverCompletionNotification(summary: summary)
         if quitRequested {
@@ -397,7 +410,7 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
             self.startNextRequestIfReady()
             guard !self.isConverting else { return }
             self.statusMessageItem?.title = "Ready for Finder conversions"
-            self.statusItem?.button?.title = "Morph"
+            self.statusItem?.button?.title = ""
             self.statusItem?.button?.toolTip = "Morph is ready for Finder conversions"
         }
     }
