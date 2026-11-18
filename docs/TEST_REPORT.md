@@ -95,13 +95,13 @@ Batch checks also converted a PNG and TIFF to JPEG while preserving checksums an
 
 ## GitHub Actions architecture coverage
 
-[macOS CI run 44225822929](https://github.com/Lakshay-13/morph/actions/runs/44225822929) on commit `2912c87` completed successfully.
+[macOS CI run 44260749826](https://github.com/Lakshay-13/morph/actions/runs/44260749826) on commit `7b8b600` completed successfully.
 
 | Runner | Validation | Result |
 |---|---|---|
 | macOS 26, x86_64 | Confirmed the runner architecture, installed the engines available for that architecture, built Morph, and ran the real-file conversion checks. LibreOffice and 7-Zip installs are skipped on Intel; their routes are capability-gated. | Passed. |
 | macOS 26, arm64 | Confirmed the runner architecture, installed conversion engines including LibreOffice and 7-Zip, built Morph, and ran the real-file conversion checks, including ZIP ↔ 7z. | Passed. |
-| macOS 26, arm64 universal-package job | Passed `brew audit --cask` and `brew style --cask`, built the release ZIP, checked that the app executable contains arm64 and x86_64 slices, verified the app signature and bundled license files, checked the ZIP and AppleDouble metadata, and matched the SHA-256 file. | Passed. |
+| macOS 26, arm64 universal-package job | Passed `brew audit --cask` and `brew style --cask`, built the release ZIP, verified arm64 and x86_64 slices in both the main app and Finder helper, confirmed the helper is an accessory app, verified the app signature and bundled license files, checked the ZIP and AppleDouble metadata, and matched the SHA-256 file. | Passed. |
 
 The hosted Intel runner provides actual x86_64 conversion-runtime coverage. The final packaged app has not been installed and launched on a physical Intel Mac. The CI package is ad-hoc signed and is not a Gatekeeper-ready release.
 
