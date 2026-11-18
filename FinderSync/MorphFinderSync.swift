@@ -47,10 +47,13 @@ final class MorphFinderSync: FIFinderSync {
         logger.info("Finder selection has \(selection.count, privacy: .public) items and \(formats.count, privacy: .public) available output formats.")
         guard !formats.isEmpty else { return nil }
 
-        let formatMenu = NSMenu(title: "Conversion formats")
-        formatMenu.autoenablesItems = false
+        let convertToMenu = NSMenu(title: "Convert To")
+        convertToMenu.autoenablesItems = false
         for format in formats {
-            let title = "\(sourceDescription(for: selection, registry: registry)) → \(format.displayName) (.\(format.fileExtension))"
+            let isPDFPageImages = format.displayName == "PNG images" && format.fileExtension == "zip"
+                && selection.allSatisfy { $0.pathExtension.lowercased() == "pdf" }
+            let extensionSuffix = isPDFPageImages ? "" : " (.\(format.fileExtension))"
+            let title = "\(sourceDescription(for: selection, registry: registry)) → \(format.displayName)\(extensionSuffix)"
             let item = NSMenuItem(title: title, action: #selector(convertSelection(_:)), keyEquivalent: "")
             item.target = self
             let request = FinderConversionRequest(
@@ -63,16 +66,8 @@ final class MorphFinderSync: FIFinderSync {
             pendingRequestsByTag[requestTag] = request
             item.tag = requestTag
             item.isEnabled = true
-            formatMenu.addItem(item)
+            convertToMenu.addItem(item)
         }
-
-        let morphItem = NSMenuItem(title: "Convert with Morph", action: nil, keyEquivalent: "")
-        morphItem.submenu = formatMenu
-        morphItem.isEnabled = true
-
-        let convertToMenu = NSMenu(title: "Convert To")
-        convertToMenu.autoenablesItems = false
-        convertToMenu.addItem(morphItem)
 
         let convertToItem = NSMenuItem(title: "Convert To", action: nil, keyEquivalent: "")
         convertToItem.submenu = convertToMenu

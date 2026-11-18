@@ -14,6 +14,12 @@ Morph's format graph is in `Sources/MorphCore/EngineRegistry.swift`; models and 
 
 Multi-part extensions such as `.tar.gz` are recognized by `URL.morphExtension(knownExtensions:)`, which tries longer registered suffixes first.
 
+FFmpeg demuxer aliases must be mapped to file extensions, not just to output extensions. Keep the mapping synchronized with `FFmpegEngine`; every muxer output exposed by the probe must have a corresponding implemented encoder case. M4A and AAC use the `m4a` and `aac` demuxer aliases, while WMA is carried by the ASF demuxer and muxer. GIF is an image/video format without an audio stream, so it must not receive audio-extraction routes.
+
+ImageMagick's format table can overstate usable output support. In particular, bitmap-to-SVG requires the `potrace` delegate; Morph omits the SVG output route when that executable is unavailable. Run the discovered image-route sweep in `Scripts/run-checks.sh` after changing capability filters so advertised image targets have an executable conversion path on the current machine.
+
+PDF page-image export is presented as **PNG images** in Finder. A one-page PDF writes one `.png` directly; multipage PDFs render numbered PNGs and group them into a `.zip`. The PDFKit renderer checks cancellation between pages and caps each raster page to 32 million pixels and 16,384 pixels on its longest side. The Finder label omits the container extension because the requested conversion is to page images.
+
 Structured-data routes are implemented by `StructuredDataEngine`. JSON/YAML/TOML objects can convert between those formats; CSV and TSV require arrays of string-keyed records, and TOML represents a top-level record array under `records`. XML bridges JSON, YAML and TOML. Keep parsing limits and generated-output validation in place when adding structured formats. Parser package versions and licenses are recorded in `Package.swift`, `Package.resolved` and `docs/THIRD_PARTY.md`.
 
 LibreOffice routes are constrained to text-document, presentation or spreadsheet families, with PDF export from each family. Do not generate a Cartesian product across all office extensions: a file extension alone does not make cross-family conversions meaningful or supported.

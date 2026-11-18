@@ -255,9 +255,9 @@ public enum EngineID: String, CaseIterable, Codable, Sendable {
     public var summary: String {
         switch self {
         case .nativeImage: "Convert formats supported by macOS ImageIO."
-        case .nativePDF: "Create PDFs from images and perform PDF page operations."
+        case .nativePDF: "Create PDFs from images, render PDF pages as PNG images, and perform PDF page operations."
         case .structuredData: "Convert JSON, YAML, TOML, CSV, TSV and XML locally."
-        case .archive: "Create and unpack ZIP and TAR archives with macOS tools."
+        case .archive: "Repackage ZIP and TAR archives with macOS tools."
         case .ffmpeg: "Convert common audio and video formats using the installed FFmpeg build."
         case .imageMagick: "Additional image formats and image transformations."
         case .libvips: "Memory-efficient conversion and resizing for large images."

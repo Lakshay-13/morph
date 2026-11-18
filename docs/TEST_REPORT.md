@@ -1,11 +1,19 @@
 # Test report
 
+## Latest Finder conversion audit (Morph 0.1.2, 2026-11-18)
+
+- `Scripts/run-checks.sh`: **28 groups passed, 0 failed, 0 skipped** on the current Apple Silicon Mac. The suite exercised all discovered PNG image-output routes; audio routes including MP3 → M4A → MP3, AAC → MP3 and WMA ↔ MP3; single-page PDF → PNG and multipage PDF → numbered PNG images; and ZIP ↔ TAR, TAR.GZ, TAR.BZ2, TAR.XZ and 7z. It also checked original-file hashes, output validation, archive members, decoded image properties, and route filtering.
+- The audit found and fixed missing FFmpeg input aliases for M4A, raw AAC and WMA; a WMA output route without a matching encoder case; and an invalid GIF → audio route. It also found that ImageMagick can list SVG output without its `potrace` delegate, so Morph now suppresses PNG → SVG unless that delegate is installed. The route sweep converts every currently advertised PNG image target through the installed app registry.
+- Added native PDF page-image export: a one-page PDF becomes one PNG, while multiple pages are grouped as numbered PNG images. Finder labels the choice **PDF → PNG images** and omits the container extension. Added the direct Finder menu hierarchy **Convert To → [source → output]**, with no intermediate Morph submenu. Finder format visibility remains editable in the app's Settings.
+- The universal Morph 0.1.2 (build 3) app is installed at `~/Applications/Morph.app`; the app, helper and Finder Sync extension contain `arm64` and `x86_64` slices, strict code-signature verification passes, and PlugInKit reports the extension enabled.
+- Live Finder test: **Convert To → PDF → PNG images** displayed the image choice without a ZIP suffix or an extra Morph submenu. Choosing it for a one-page PDF created a valid 1224 × 1584 `one-page.png`; no `one-page.zip` was created, the PDF SHA-256 stayed `4fea0507aa2c2281d5f936c559284cef7ee83f2192642d3318e8384e6bc4af71`, Finder stayed frontmost, and the hidden app/helper remained running. The 0.1.1 live check above also exercised M4A → MP3; the current 0.1.2 automated test repeats that pair.
+
 **Run on:** macOS 26.6.2, Apple M3 Max (arm64), Xcode 27.0 / Swift 6.4
 
 **Run date:** 2026-11-18
 
 **Command:** `Scripts/run-checks.sh` with SwiftPM using the selected Xcode 27 toolchain
-**Result:** 27 automated groups passed, 0 failed, 0 skipped. The local harness executed 33 distinct input/output format pairs, including ZIP ↔ 7z, plus PDF page-range extraction, PDF compression, video trimming and compression, batch rename copies, and safe metadata-copy editing with real generated files. The same result was reproduced by running the x86_64 harness under Rosetta.
+**Earlier baseline result:** 27 automated groups passed, 0 failed, 0 skipped before the page-count-aware PDF image export and registry audit. That run executed 33 distinct input/output format pairs, including ZIP ↔ 7z, plus PDF page-range extraction, PDF compression, video trimming and compression, batch rename copies, and safe metadata-copy editing with real generated files; its result was also reproduced under Rosetta. The latest result is listed at the top of this report.
 
 The harness checks that each conversion output exists and is non-empty, runs `OutputValidator`, verifies the generated content or media properties where practical, and checks SHA-256 of the original file before and after conversion. Fixtures are generated locally; no network service is used for conversion. A separate opt-in live check exercised the bottle-size estimator against Homebrew's formula API and GHCR.
 

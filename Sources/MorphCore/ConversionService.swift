@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import ImageIO
 import PDFKit
 import UniformTypeIdentifiers
@@ -49,8 +50,20 @@ public final class ConversionService {
         guard !runnableRoutes.isEmpty else { throw MorphError.missingEngine(candidateRoutes[0].engine) }
         if cancellation.isCancelled { throw MorphError.cancelled }
 
+        let isPDFPageImages = inputExtension == "pdf" && request.outputFormat.fileExtension == "zip" && candidateRoutes.contains {
+            $0.engine == .nativePDF && $0.output.fileExtension == "zip"
+        }
+        let isSinglePageImage = isPDFPageImages && (PDFDocument(url: request.inputURL)?.pageCount == 1)
+        let outputFormat = isSinglePageImage ? MorphFormat("png", "PNG image", .image) : request.outputFormat
+        let effectiveRequest = ConversionRequest(
+            inputURL: request.inputURL,
+            outputFormat: outputFormat,
+            outputDirectory: request.outputDirectory,
+            imageQuality: request.imageQuality
+        )
+
         try FileManager.default.createDirectory(at: request.outputDirectory, withIntermediateDirectories: true)
-        let finalURL = uniqueOutputURL(for: request, knownExtensions: knownExtensions)
+        let finalURL = uniqueOutputURL(for: effectiveRequest, knownExtensions: knownExtensions)
         var lastFailure: String?
         for route in runnableRoutes {
             guard let engine = engines[route.engine] else {
@@ -65,12 +78,12 @@ public final class ConversionService {
                 continue
             }
             defer { try? FileManager.default.removeItem(at: stagingDirectory) }
-            let temporaryURL = stagingDirectory.appendingPathComponent("output.partial.\(request.outputFormat.fileExtension)")
-            let context = ConversionContext(route: route, request: request, temporaryOutputURL: temporaryURL, cancellation: cancellation)
+            let temporaryURL = stagingDirectory.appendingPathComponent("output.partial.\(outputFormat.fileExtension)")
+            let context = ConversionContext(route: route, request: effectiveRequest, temporaryOutputURL: temporaryURL, cancellation: cancellation)
             do {
                 try engine.convert(context: context)
                 if cancellation.isCancelled { throw MorphError.cancelled }
-                try OutputValidator.validate(temporaryURL, format: request.outputFormat, engine: route.engine)
+                try OutputValidator.validate(temporaryURL, format: outputFormat, engine: route.engine)
                 do { try FileManager.default.moveItem(at: temporaryURL, to: finalURL) }
                 catch { throw MorphError.processFailed("Morph could not safely save the output: \(error.localizedDescription)") }
                 return ConversionResult(inputURL: request.inputURL, outputURL: finalURL, engine: route.engine, completedAt: Date())
@@ -134,7 +147,23 @@ public struct NativePDFConversionEngine: ConversionEngine {
     public let id: EngineID = .nativePDF
     public init() {}
     public func convert(context: ConversionContext) throws {
-        try NativePDFEngine.imageToPDF(input: context.request.inputURL, output: context.temporaryOutputURL)
+        if context.route.inputExtension == "pdf", context.route.output.fileExtension == "zip" {
+            if context.temporaryOutputURL.pathExtension.lowercased() == "png" {
+                try NativePDFEngine.singlePageToPNG(
+                    input: context.request.inputURL,
+                    output: context.temporaryOutputURL,
+                    cancellation: context.cancellation
+                )
+            } else {
+                try NativePDFEngine.pagesToPNGZip(
+                    input: context.request.inputURL,
+                    output: context.temporaryOutputURL,
+                    cancellation: context.cancellation
+                )
+            }
+        } else {
+            try NativePDFEngine.imageToPDF(input: context.request.inputURL, output: context.temporaryOutputURL)
+        }
     }
 }
 
@@ -247,6 +276,97 @@ public enum NativePDFEngine {
         document.insert(page, at: 0)
         guard document.write(to: output) else { throw MorphError.invalidOutput("PDFKit could not write the PDF.") }
     }
+
+    public static func pagesToPNGZip(input: URL, output: URL, cancellation: CancellationToken) throws {
+        guard let document = PDFDocument(url: input), document.pageCount > 0 else {
+            throw MorphError.invalidInput("The selected PDF is unreadable or has no pages.")
+        }
+        guard let zip = ExecutableLocator.resolve(["zip"]) else {
+            throw MorphError.processFailed("The macOS ZIP creation tool is unavailable.")
+        }
+
+        let workDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("morph-pdf-pages-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: workDirectory) }
+
+        for pageIndex in 0..<document.pageCount {
+            if cancellation.isCancelled { throw MorphError.cancelled }
+            guard let page = document.page(at: pageIndex) else {
+                throw MorphError.invalidInput("Morph could not read PDF page \(pageIndex + 1).")
+            }
+            let pageName = String(format: "page-%0*d.png", String(document.pageCount).count, pageIndex + 1)
+            try render(page, pageIndex: pageIndex, output: workDirectory.appendingPathComponent(pageName))
+        }
+
+        let result = try ProcessRunner.run(
+            executable: zip,
+            arguments: ["-q", "-r", output.path, "."],
+            currentDirectory: workDirectory,
+            cancellation: cancellation
+        )
+        guard result.status == 0 else {
+            throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    public static func singlePageToPNG(input: URL, output: URL, cancellation: CancellationToken) throws {
+        guard let document = PDFDocument(url: input), document.pageCount == 1,
+              let page = document.page(at: 0) else {
+            throw MorphError.invalidInput("A single-page PDF is required for direct PNG output.")
+        }
+        if cancellation.isCancelled { throw MorphError.cancelled }
+        try render(page, pageIndex: 0, output: output)
+    }
+
+    private static func render(_ page: PDFPage, pageIndex: Int, output: URL) throws {
+        let pageBounds = page.bounds(for: .cropBox).standardized
+        let pageWidth = Double(pageBounds.width)
+        let pageHeight = Double(pageBounds.height)
+        guard pageWidth.isFinite, pageHeight.isFinite, pageWidth > 0, pageHeight > 0 else {
+            throw MorphError.invalidInput("PDF page \(pageIndex + 1) has invalid dimensions.")
+        }
+
+        let maximumPixels = 32_000_000.0
+        let maximumDimension = 16_384.0
+        let desiredScale = 2.0
+        let areaScale = sqrt(maximumPixels / (pageWidth * pageHeight))
+        let dimensionScale = maximumDimension / max(pageWidth, pageHeight)
+        let scale = min(desiredScale, areaScale, dimensionScale)
+        let pixelWidth = max(1, Int(ceil(pageWidth * scale)))
+        let pixelHeight = max(1, Int(ceil(pageHeight * scale)))
+        guard let context = CGContext(
+            data: nil,
+            width: pixelWidth,
+            height: pixelHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw MorphError.invalidOutput("Morph could not allocate an image for PDF page \(pageIndex + 1).")
+        }
+
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
+        context.interpolationQuality = .high
+        context.saveGState()
+        context.scaleBy(x: scale, y: scale)
+        context.translateBy(x: -pageBounds.minX, y: -pageBounds.minY)
+        page.draw(with: .cropBox, to: context)
+        context.restoreGState()
+
+        guard let image = context.makeImage() else {
+            throw MorphError.invalidOutput("Morph could not render PDF page \(pageIndex + 1).")
+        }
+        guard let destination = CGImageDestinationCreateWithURL(output as CFURL, "public.png" as CFString, 1, nil) else {
+            throw MorphError.invalidOutput("Morph could not create the PNG for PDF page \(pageIndex + 1).")
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else {
+            throw MorphError.invalidOutput("Morph could not finish the PNG for PDF page \(pageIndex + 1).")
+        }
+    }
 }
 
 public enum ImageMagickEngine {
@@ -279,6 +399,7 @@ public enum FFmpegEngine {
         case "ogg": arguments += ["-vn", "-c:a", "libvorbis", "-q:a", "5"]
         case "opus": arguments += ["-vn", "-c:a", "libopus", "-b:a", "128k"]
         case "aiff", "aif": arguments += ["-vn", "-c:a", "pcm_s16be"]
+        case "wma": arguments += ["-vn", "-c:a", "wmav2", "-b:a", "128k"]
         case "mp4", "mov": arguments += ["-c:v", "libx264", "-preset", "medium", "-crf", "22", "-c:a", "aac", "-b:a", "192k"]
         case "webm": arguments += ["-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-c:a", "libopus"]
         case "mkv": arguments += ["-c:v", "libx264", "-preset", "medium", "-crf", "22", "-c:a", "aac"]
@@ -348,30 +469,56 @@ public enum LibreOfficeEngine {
 }
 
 public enum ArchiveEngine {
+    static let builtInInputExtensions: Set<String> = ["zip", "tar", "tar.gz", "tgz", "tar.bz2", "tbz", "tbz2", "tar.xz", "txz"]
+    static let builtInOutputExtensions: Set<String> = ["zip", "tar", "tar.gz", "tar.bz2", "tar.xz"]
+
     public static func convert(input: URL, output: URL, cancellation: CancellationToken) throws {
         let workDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("morph-archive-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: workDirectory) }
 
         let inputExt = archiveExtension(for: input)
-        guard ["zip", "tar.gz"].contains(inputExt) else {
+        guard builtInInputExtensions.contains(inputExt) else {
             throw MorphError.unsupportedConversion(inputExt, output.pathExtension)
         }
         try extract(input: input, to: workDirectory, cancellation: cancellation)
 
-        guard let tar = ExecutableLocator.resolve(["tar"]),
-              let zip = ExecutableLocator.resolve(["zip"]) else {
-            throw MorphError.processFailed("Required macOS ZIP or TAR creation tools are unavailable.")
+        let outputExt = archiveExtension(for: output)
+        guard builtInOutputExtensions.contains(outputExt) else {
+            throw MorphError.unsupportedConversion(inputExt, outputExt)
         }
 
-        if output.pathExtension.lowercased() == "zip" {
-            let result = try ProcessRunner.run(executable: zip, arguments: ["-qr", output.path, "."], currentDirectory: workDirectory, cancellation: cancellation)
-            guard result.status == 0 else { throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        } else if output.lastPathComponent.lowercased().hasSuffix(".tar.gz") {
-            let result = try ProcessRunner.run(executable: tar, arguments: ["-czf", output.path, "-C", workDirectory.path, "."], cancellation: cancellation)
-            guard result.status == 0 else { throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let result: ProcessResult
+        if outputExt == "zip" {
+            guard let zip = ExecutableLocator.resolve(["zip"]) else {
+                throw MorphError.processFailed("The macOS ZIP creation tool is unavailable.")
+            }
+            result = try ProcessRunner.run(
+                executable: zip,
+                arguments: ["-qr", output.path, "."],
+                currentDirectory: workDirectory,
+                cancellation: cancellation
+            )
         } else {
-            throw MorphError.unsupportedConversion(input.pathExtension, output.pathExtension)
+            guard let tar = ExecutableLocator.resolve(["tar"]) else {
+                throw MorphError.processFailed("The macOS TAR tool is unavailable.")
+            }
+            let compressionFlag: String
+            switch outputExt {
+            case "tar": compressionFlag = "c"
+            case "tar.gz": compressionFlag = "cz"
+            case "tar.bz2": compressionFlag = "cj"
+            case "tar.xz": compressionFlag = "cJ"
+            default: throw MorphError.unsupportedConversion(inputExt, outputExt)
+            }
+            result = try ProcessRunner.run(
+                executable: tar,
+                arguments: ["-\(compressionFlag)f", output.path, "-C", workDirectory.path, "."],
+                cancellation: cancellation
+            )
+        }
+        guard result.status == 0 else {
+            throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
     }
 
@@ -387,14 +534,14 @@ public enum ArchiveEngine {
             try validateArchivePaths(listing.stdout)
             let extracted = try ProcessRunner.run(executable: ditto, arguments: ["-x", "-k", input.path, directory.path], cancellation: cancellation)
             guard extracted.status == 0 else { throw MorphError.invalidInput(extracted.stderr.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        } else if inputExt == "tar.gz" {
+        } else if ["tar", "tar.gz", "tar.bz2", "tar.xz"].contains(inputExt) {
             guard let tar = ExecutableLocator.resolve(["tar"]) else {
                 throw MorphError.processFailed("The macOS TAR tool is unavailable.")
             }
-            let listing = try ProcessRunner.run(executable: tar, arguments: ["-tzf", input.path], cancellation: cancellation)
-            guard listing.status == 0 else { throw MorphError.invalidInput("The TAR.GZ directory could not be read.") }
+            let listing = try ProcessRunner.run(executable: tar, arguments: ["-tf", input.path], cancellation: cancellation)
+            guard listing.status == 0 else { throw MorphError.invalidInput("The TAR archive directory could not be read.") }
             try validateArchivePaths(listing.stdout)
-            let extracted = try ProcessRunner.run(executable: tar, arguments: ["-xzf", input.path, "-C", directory.path, "--no-same-owner"], cancellation: cancellation)
+            let extracted = try ProcessRunner.run(executable: tar, arguments: ["-xf", input.path, "-C", directory.path, "--no-same-owner"], cancellation: cancellation)
             guard extracted.status == 0 else { throw MorphError.invalidInput(extracted.stderr.trimmingCharacters(in: .whitespacesAndNewlines)) }
         } else {
             throw MorphError.unsupportedConversion(inputExt, "archive contents")
@@ -405,6 +552,9 @@ public enum ArchiveEngine {
     static func archiveExtension(for url: URL) -> String {
         let name = url.lastPathComponent.lowercased()
         if name.hasSuffix(".tar.gz") || name.hasSuffix(".tgz") { return "tar.gz" }
+        if name.hasSuffix(".tar.bz2") || name.hasSuffix(".tbz2") || name.hasSuffix(".tbz") { return "tar.bz2" }
+        if name.hasSuffix(".tar.xz") || name.hasSuffix(".txz") { return "tar.xz" }
+        if name.hasSuffix(".tar") { return "tar" }
         if name.hasSuffix(".zip") { return "zip" }
         if name.hasSuffix(".7z") { return "7z" }
         return url.pathExtension.lowercased()
@@ -576,7 +726,7 @@ public enum OutputValidator {
         guard let executable else { throw MorphError.invalidOutput("No archive validation tool is available.") }
         let result = outputExt == "zip"
             ? try ProcessRunner.run(executable: executable, arguments: ["-t", url.path])
-            : try ProcessRunner.run(executable: executable, arguments: ["-tzf", url.path])
+            : try ProcessRunner.run(executable: executable, arguments: ["-tf", url.path])
         guard result.status == 0 else { throw MorphError.invalidOutput("The generated archive failed its integrity check.") }
     }
 

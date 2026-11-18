@@ -30,6 +30,7 @@ final class MorphCheckSuite {
         test("route-aware conversion presets") { _ in try checkConversionPresets() }
         test("Finder conversion targets match the entire selection") { _ in try checkQuickConversionCatalog() }
         test("audio and video with FFmpeg") { try checkAudioVideo($0) }
+        test("PDF page images adapt to page count") { try checkPDFPageImageZIP($0) }
         test("video trimming") { try checkVideoTrimming($0) }
         test("video compression") { try checkVideoCompression($0) }
         test("documents and PDF text") { try checkDocuments($0) }
@@ -119,6 +120,17 @@ final class MorphCheckSuite {
         try expect(CGImageSourceCreateWithURL(tiff as CFURL, nil) != nil, "TIFF did not decode")
         let pdf = try convert(png, to: "pdf", category: .document, output: output)
         try expect(PDFDocument(url: pdf)?.pageCount == 1, "Image PDF should contain one page")
+
+        let discoveredImageExtensions = Set(registry.routes
+            .filter { $0.inputExtension == "png" && $0.output.category == .image }
+            .map(\.output.fileExtension))
+        if ExecutableLocator.resolve(["potrace"]) == nil {
+            try expect(!discoveredImageExtensions.contains("svg"), "PNG → SVG must not be advertised when ImageMagick's potrace delegate is missing")
+        }
+        for fileExtension in discoveredImageExtensions.sorted() {
+            _ = try convert(png, to: fileExtension, category: .image, output: output)
+            print("  PASS  .png → .\(fileExtension) through an available image route")
+        }
         try expect(try sha256(png) == originalHash, "Image source changed")
 
         if let route = registry.routes.first(where: { $0.engine == .imageMagick && $0.inputExtension == "png" && $0.output.fileExtension == "webp" }) {
@@ -162,6 +174,11 @@ final class MorphCheckSuite {
             registry: registry
         )
         try expect(discoveredTargets.contains { $0.fileExtension == "jpg" }, "The installed capability registry should offer PNG → JPEG")
+        let pdfTargets = QuickConversionCatalog.availableOutputs(
+            for: [URL(fileURLWithPath: "/tmp/source.pdf")],
+            registry: registry
+        )
+        try expect(pdfTargets.contains { $0.fileExtension == "zip" && $0.displayName == "PNG images" }, "PDFs should offer a source-aware PNG images choice")
 
         let imageMagick = EngineStatus(id: .imageMagick, executableURL: URL(fileURLWithPath: "/usr/bin/magick"))
         let libreOffice = EngineStatus(id: .libreOffice, executableURL: URL(fileURLWithPath: "/usr/bin/soffice"))
@@ -173,6 +190,7 @@ final class MorphCheckSuite {
             ConversionRoute(inputExtension: "png", output: MorphFormat("jpg", "JPEG", .image), engine: .nativeImage, description: "Built-in image conversion"),
             ConversionRoute(inputExtension: "png", output: MorphFormat("webp", "WebP", .image), engine: .imageMagick, description: "Optional image conversion"),
             ConversionRoute(inputExtension: "png", output: MorphFormat("pdf", "PDF", .document), engine: .nativePDF, description: "Built-in PDF export"),
+            ConversionRoute(inputExtension: "pdf", output: MorphFormat("zip", "PNG images", .archive), engine: .nativePDF, description: "Export PDF pages as PNG images"),
             ConversionRoute(inputExtension: "tiff", output: MorphFormat("jpg", "JPEG", .image), engine: .nativeImage, description: "Built-in image conversion"),
             ConversionRoute(inputExtension: "docx", output: MorphFormat("pdf", "PDF", .document), engine: .libreOffice, description: "Optional document conversion"),
         ]
@@ -187,6 +205,8 @@ final class MorphCheckSuite {
         let pngTargets = QuickConversionCatalog.availableOutputs(for: [png], registry: registry)
         try expect(pngTargets.map(\.fileExtension) == ["jpg", "webp", "pdf"], "A PNG selection should show only its available image/PDF targets; got \(pngTargets.map(\.fileExtension))")
         try expect(!pngTargets.contains { $0.fileExtension == "mp3" }, "A PNG selection must not show unrelated audio outputs")
+        let fixturePDFTargets = QuickConversionCatalog.availableOutputs(for: [URL(fileURLWithPath: "/tmp/source.pdf")], registry: registry)
+        try expect(fixturePDFTargets.contains { $0.fileExtension == "zip" && $0.displayName == "PNG images" }, "PDF's image destination should have a concise, format-focused label")
 
         let imageTargets = QuickConversionCatalog.availableOutputs(for: [png, tiff], registry: registry)
         try expect(imageTargets.map(\.fileExtension) == ["jpg"], "Finder should show only targets supported by every selected image; got \(imageTargets.map(\.fileExtension))")
@@ -229,6 +249,10 @@ final class MorphCheckSuite {
         guard let ffmpeg = registry.status(for: .ffmpeg)?.executableURL, registry.isAvailable(.ffmpeg) else {
             throw CheckSkip("FFmpeg is not installed")
         }
+        let ffmpegStatus = registry.status(for: .ffmpeg)!
+        try expect(registry.routes.contains { $0.inputExtension == "mp3" && $0.output.fileExtension == "m4a" }, "The detected FFmpeg build should expose MP3 → M4A")
+        try expect(registry.routes.contains { $0.inputExtension == "m4a" && $0.output.fileExtension == "mp3" }, "The detected FFmpeg build should expose the reverse M4A → MP3 route")
+        try expect(!registry.routes.contains { $0.inputExtension == "gif" && $0.output.fileExtension == "mp3" }, "GIF must not advertise audio extraction")
         let output = folder.appendingPathComponent("output", isDirectory: true)
         let wav = folder.appendingPathComponent("tone.wav")
         let generatedAudio = try ProcessRunner.run(executable: ffmpeg, arguments: [
@@ -241,6 +265,41 @@ final class MorphCheckSuite {
         try validateWithFFprobe(mp3, ffmpeg: ffmpeg)
         try validateWithFFprobe(restoredWav, ffmpeg: ffmpeg)
         try expect(try sha256(wav) == wavHash, "WAV source changed")
+
+        let mp3Hash = try sha256(mp3)
+        let m4a = try convert(mp3, to: "m4a", category: .audio, output: output)
+        let m4aHash = try sha256(m4a)
+        let restoredMP3 = try convert(m4a, to: "mp3", category: .audio, output: output)
+        try validateWithFFprobe(m4a, ffmpeg: ffmpeg)
+        try validateWithFFprobe(restoredMP3, ffmpeg: ffmpeg)
+        try expect(try sha256(mp3) == mp3Hash && sha256(m4a) == m4aHash, "MP3/M4A round-trip changed one of its source files")
+
+        if ffmpegStatus.supportedInputExtensions.contains("aac") {
+            let rawAAC = folder.appendingPathComponent("tone.aac")
+            let generatedAAC = try ProcessRunner.run(executable: ffmpeg, arguments: [
+                "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=550:duration=1",
+                "-c:a", "aac", "-f", "adts", rawAAC.path,
+            ])
+            try expect(generatedAAC.status == 0, "Could not generate AAC fixture: \(generatedAAC.stderr)")
+            let rawAAChash = try sha256(rawAAC)
+            let aacToMP3 = try convert(rawAAC, to: "mp3", category: .audio, output: output)
+            try validateWithFFprobe(aacToMP3, ffmpeg: ffmpeg)
+            try expect(try sha256(rawAAC) == rawAAChash, "AAC source changed during conversion")
+        }
+
+        if ffmpegStatus.supportedInputExtensions.contains("wma"), ffmpegStatus.supportedOutputExtensions.contains("wma") {
+            let wma = folder.appendingPathComponent("tone.wma")
+            let generatedWMA = try ProcessRunner.run(executable: ffmpeg, arguments: [
+                "-hide_banner", "-loglevel", "error", "-y", "-i", wav.path, "-c:a", "wmav2", "-b:a", "64k", wma.path,
+            ])
+            try expect(generatedWMA.status == 0, "Could not generate WMA fixture: \(generatedWMA.stderr)")
+            let wmaHash = try sha256(wma)
+            let wmaToMP3 = try convert(wma, to: "mp3", category: .audio, output: output)
+            let mp3ToWMA = try convert(mp3, to: "wma", category: .audio, output: output)
+            try validateWithFFprobe(wmaToMP3, ffmpeg: ffmpeg)
+            try validateWithFFprobe(mp3ToWMA, ffmpeg: ffmpeg)
+            try expect(try sha256(wma) == wmaHash, "WMA source changed during conversion")
+        }
 
         let mp4 = folder.appendingPathComponent("clip.mp4")
         let generatedVideo = try ProcessRunner.run(executable: ffmpeg, arguments: [
@@ -570,11 +629,19 @@ final class MorphCheckSuite {
         let created = try ProcessRunner.run(executable: zipTool, arguments: ["-qr", zip.path, "."], currentDirectory: sourceFolder)
         try expect(created.status == 0, "Could not create ZIP fixture: \(created.stderr)")
         let zipHash = try sha256(zip)
-        let tarGZ = try convert(zip, to: "tar.gz", category: .archive, output: output)
-        let roundTripZip = try convert(tarGZ, to: "zip", category: .archive, output: output)
         guard let unzip = ExecutableLocator.resolve(["unzip"]) else { throw CheckSkip("unzip is unavailable") }
-        let listing = try ProcessRunner.run(executable: unzip, arguments: ["-Z1", roundTripZip.path])
-        try expect(listing.status == 0 && listing.stdout.contains("payload.txt"), "Repacked ZIP is missing its member")
+        guard let tarTool = ExecutableLocator.resolve(["tar"]) else { throw CheckSkip("TAR command is unavailable") }
+        for target in ["tar", "tar.gz", "tar.bz2", "tar.xz"] {
+            let archive = try convert(zip, to: target, category: .archive, output: output)
+            try OutputValidator.validate(archive, format: MorphFormat(target, target.uppercased(), .archive), engine: .archive)
+            let listing = try ProcessRunner.run(executable: tarTool, arguments: ["-tf", archive.path])
+            try expect(listing.status == 0 && listing.stdout.contains("payload.txt"), ".\(target) is missing its payload")
+            let roundTripZip = try convert(archive, to: "zip", category: .archive, output: output)
+            let zipListing = try ProcessRunner.run(executable: unzip, arguments: ["-Z1", roundTripZip.path])
+            let payload = try ProcessRunner.run(executable: unzip, arguments: ["-p", roundTripZip.path])
+            try expect(zipListing.status == 0 && zipListing.stdout.contains("payload.txt"), "Repacked ZIP from .\(target) is missing its member")
+            try expect(payload.status == 0 && payload.stdout.contains("archive data retained"), "Repacked ZIP from .\(target) changed the payload")
+        }
         try expect(try sha256(zip) == zipHash, "Source ZIP changed")
     }
 
@@ -760,6 +827,62 @@ final class MorphCheckSuite {
         let payload = extracted.appendingPathComponent("payload.txt")
         try expect(try String(contentsOf: payload, encoding: .utf8) == "extracted safely", "ZIP extraction lost file content")
         try expect(try sha256(zip) == zipHash, "ZIP source changed")
+    }
+
+    private func checkPDFPageImageZIP(_ folder: URL) throws {
+        let first = folder.appendingPathComponent("first.pdf")
+        let second = folder.appendingPathComponent("second.pdf")
+        try makeTextPDF(at: first, text: "First page image content")
+        try makeTextPDF(at: second, text: "Second page image content")
+        let output = folder.appendingPathComponent("output", isDirectory: true)
+        let source = try MorphFileOperations.mergePDFs([first, second], outputDirectory: output)
+        let sourceHash = try sha256(source)
+        guard let route = registry.routes.first(where: {
+            $0.inputExtension == "pdf" && $0.output.fileExtension == "zip" && $0.engine == .nativePDF
+        }) else {
+            throw CheckFailure("The PDF page-image ZIP route was not registered")
+        }
+        let result = try ConversionService(registry: registry).convert(
+            ConversionRequest(inputURL: source, outputFormat: route.output, outputDirectory: output)
+        )
+        try OutputValidator.validate(result.outputURL, format: route.output, engine: route.engine)
+        try expect(PDFDocument(url: source)?.pageCount == 2, "Page-image conversion changed the source PDF")
+        try expect(try sha256(source) == sourceHash, "Page-image conversion changed the PDF bytes")
+
+        guard let unzip = ExecutableLocator.resolve(["unzip"]) else { throw CheckSkip("unzip is unavailable") }
+        let listing = try ProcessRunner.run(executable: unzip, arguments: ["-Z1", result.outputURL.path])
+        try expect(listing.status == 0, "The page-image ZIP could not be listed")
+        try expect(listing.stdout.contains("page-1.png") && listing.stdout.contains("page-2.png"), "The page-image ZIP must contain one PNG for each PDF page")
+
+        let extracted = folder.appendingPathComponent("rendered-pages", isDirectory: true)
+        try FileManager.default.createDirectory(at: extracted, withIntermediateDirectories: true)
+        let extraction = try ProcessRunner.run(executable: unzip, arguments: ["-q", result.outputURL.path, "-d", extracted.path])
+        try expect(extraction.status == 0, "The page-image ZIP could not be extracted")
+        let pageImages = try FileManager.default.contentsOfDirectory(at: extracted, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension.lowercased() == "png" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        try expect(pageImages.count == 2, "The page-image ZIP contains \(pageImages.count) PNGs instead of two")
+        var imageHashes: [String] = []
+        for imageURL in pageImages {
+            guard let imageSource = CGImageSourceCreateWithURL(imageURL as CFURL, nil),
+                  let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+                throw CheckFailure("Generated page image \(imageURL.lastPathComponent) is not a valid PNG")
+            }
+            try expect(image.width > 0 && image.height > 0, "Generated page image has empty dimensions")
+            imageHashes.append(try sha256(imageURL))
+        }
+        try expect(Set(imageHashes).count == 2, "Different PDF pages produced identical PNG images")
+
+        let singlePage = folder.appendingPathComponent("single-page.pdf")
+        try makeTextPDF(at: singlePage, text: "Single page image content")
+        let singlePageHash = try sha256(singlePage)
+        let singlePageResult = try ConversionService(registry: registry).convert(
+            ConversionRequest(inputURL: singlePage, outputFormat: route.output, outputDirectory: output)
+        )
+        try expect(singlePageResult.outputURL.pathExtension == "png", "A one-page PDF should produce a PNG rather than an archive")
+        try OutputValidator.validate(singlePageResult.outputURL, format: MorphFormat("png", "PNG image", .image), engine: singlePageResult.engine)
+        try expect(try sha256(singlePage) == singlePageHash, "Single-page PDF image export changed its source")
+        try expect(!FileManager.default.fileExists(atPath: output.appendingPathComponent("single-page.zip").path), "A one-page PDF should not create an archive")
     }
 
     private func checkBatchAndCollisions(_ folder: URL) throws {

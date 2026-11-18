@@ -69,8 +69,8 @@ public struct EngineRegistry: Codable, Sendable {
             ),
             .archive: EngineStatus(
                 id: .archive,
-                supportedInputExtensions: ["zip", "tar.gz", "tgz"],
-                supportedOutputExtensions: ["zip", "tar.gz"]
+                supportedInputExtensions: ArchiveEngine.builtInInputExtensions,
+                supportedOutputExtensions: ArchiveEngine.builtInOutputExtensions
             ),
         ]
     }
@@ -194,11 +194,13 @@ private enum MediaCapabilities {
 
         var extensions = Set<String>()
         let containerMap: [String: [String]] = [
-            "mp4": ["mp4", "m4v"], "mov": ["mov", "qt"], "matroska": ["mkv", "mk3d", "mka"],
+            "mp4": ["mp4", "m4v"], "mov": ["mov", "qt"], "m4a": ["m4a"],
+            "3gp": ["3gp"], "3g2": ["3g2"], "mj2": ["mj2"],
+            "matroska": ["mkv", "mk3d", "mka"],
             "webm": ["webm"], "avi": ["avi"], "gif": ["gif"], "mpeg": ["mpeg", "mpg"],
-            "asf": ["asf", "wmv"], "flv": ["flv"], "mp3": ["mp3"], "wav": ["wav"],
-            "flac": ["flac"], "adts": ["aac"], "ipod": ["m4a"], "ogg": ["ogg", "opus"],
-            "aiff": ["aiff", "aif"], "wv": ["wv"], "3gp": ["3gp"], "3g2": ["3g2"],
+            "asf": ["asf", "wmv", "wma"], "flv": ["flv"], "mp3": ["mp3"], "wav": ["wav"],
+            "flac": ["flac"], "aac": ["aac"], "adts": ["aac"], "ipod": ["m4a"], "ogg": ["ogg", "opus"],
+            "aiff": ["aiff", "aif"], "wv": ["wv"],
         ]
         for alias in aliases { extensions.formUnion(containerMap[alias] ?? []) }
 
@@ -212,7 +214,7 @@ private enum MediaCapabilities {
                 "mp4": ["libx264", "aac"], "m4v": ["libx264", "aac"], "mov": ["libx264", "aac"],
                 "mkv": ["libx264", "aac"], "webm": ["libvpx-vp9", "libopus"], "avi": ["mpeg4", "libmp3lame"],
                 "gif": ["gif"], "mpeg": ["mpeg2video", "mp2"], "mpg": ["mpeg2video", "mp2"],
-                "wmv": ["wmv2", "wmav2"], "flv": ["flv", "aac"], "mp3": ["libmp3lame"],
+                "wmv": ["wmv2", "wmav2"], "wma": ["wmav2"], "flv": ["flv", "aac"], "mp3": ["libmp3lame"],
                 "wav": ["pcm_s16le"], "flac": ["flac"], "aac": ["aac"], "m4a": ["aac"],
                 "ogg": ["libvorbis"], "opus": ["libopus"], "aiff": ["pcm_s16be"], "aif": ["pcm_s16be"],
             ]
@@ -241,7 +243,15 @@ private enum ImageMagickCapabilities {
             let mode = String(columns[2]).lowercased()
             guard let formats = aliases[name.uppercased()] else { continue }
             if mode.contains("r") { inputs.formUnion(formats) }
-            if mode.contains("w") { outputs.formUnion(formats) }
+            if mode.contains("w") {
+                // ImageMagick advertises SVG as writable even when its bitmap
+                // vectorization delegate is absent. In that case `magick
+                // input.png output.svg` fails at runtime, so keep the route
+                // hidden until the required delegate is available.
+                if !formats.contains("svg") || ExecutableLocator.resolve(["potrace"]) != nil {
+                    outputs.formUnion(formats)
+                }
+            }
         }
         return (inputs, outputs)
     }
@@ -302,8 +312,10 @@ private enum ConversionCatalog {
         MorphFormat("xlsx", "Excel workbook", .spreadsheet), MorphFormat("xls", "Excel 97–2003", .spreadsheet),
         MorphFormat("csv", "CSV", .spreadsheet), MorphFormat("tsv", "TSV", .spreadsheet), MorphFormat("ods", "OpenDocument spreadsheet", .spreadsheet),
         MorphFormat("json", "JSON", .spreadsheet), MorphFormat("xml", "XML", .spreadsheet), MorphFormat("yaml", "YAML", .spreadsheet), MorphFormat("yml", "YAML", .spreadsheet), MorphFormat("toml", "TOML", .spreadsheet),
-        MorphFormat("zip", "ZIP archive", .archive), MorphFormat("7z", "7-Zip archive", .archive), MorphFormat("tar.gz", "GZIP TAR archive", .archive),
-        MorphFormat("gz", "GZIP", .archive), MorphFormat("bz2", "BZIP2", .archive), MorphFormat("xz", "XZ", .archive), MorphFormat("rar", "RAR archive", .archive),
+        MorphFormat("zip", "ZIP archive", .archive), MorphFormat("7z", "7-Zip archive", .archive),
+        MorphFormat("tar", "TAR archive", .archive), MorphFormat("tar.gz", "GZIP TAR archive", .archive),
+        MorphFormat("tar.bz2", "BZIP2 TAR archive", .archive), MorphFormat("tar.xz", "XZ TAR archive", .archive),
+        MorphFormat("gz", "GZIP stream", .archive), MorphFormat("bz2", "BZIP2 stream", .archive), MorphFormat("xz", "XZ stream", .archive), MorphFormat("rar", "RAR archive", .archive),
     ]
 
     static func buildRoutes(statuses: [EngineID: EngineStatus]) -> [ConversionRoute] {
@@ -340,14 +352,24 @@ private enum ConversionCatalog {
             let sourceIsAudio = audioInputs.contains(source)
             let sourceIsVideo = videoInputs.contains(source)
             guard sourceIsAudio || sourceIsVideo else { continue }
+            let sourceCanContainAudio = sourceIsAudio || (sourceIsVideo && source != "gif")
             for format in mediaFormats where format.fileExtension != source && ffmpegOutputs.contains(format.fileExtension) {
                 let outputIsAudio = format.category == .audio
-                if outputIsAudio && !sourceIsAudio && !sourceIsVideo { continue }
+                if outputIsAudio && !sourceCanContainAudio { continue }
                 if !outputIsAudio && !sourceIsVideo { continue }
                 guard let status = statuses[.ffmpeg], status.isInstalled else { continue }
                 let outputFormat = format.fileExtension == "gif" ? MorphFormat("gif", "GIF animation", .video) : format
                 result.append(ConversionRoute(inputExtension: source, output: outputFormat, engine: .ffmpeg, description: "Convert using the installed FFmpeg build"))
             }
+        }
+
+        if statuses[.nativePDF]?.isInstalled == true {
+            result.append(ConversionRoute(
+                inputExtension: "pdf",
+                output: MorphFormat("zip", "PNG images", .archive),
+                engine: .nativePDF,
+                description: "Export PDF pages as PNG images; single-page PDFs produce one PNG"
+            ))
         }
 
         let pandoc = statuses[.pandoc]
@@ -385,9 +407,13 @@ private enum ConversionCatalog {
         }
 
         if statuses[.archive]?.isInstalled == true {
-            add("zip", "tar.gz", .archive, "Repackage with built-in macOS archive tools")
-            add("tar.gz", "zip", .archive, "Repackage with built-in macOS archive tools")
-            add("tgz", "zip", .archive, "Repackage with built-in macOS archive tools")
+            let archiveInputs = statuses[.archive]?.supportedInputExtensions ?? []
+            let archiveOutputs = statuses[.archive]?.supportedOutputExtensions ?? []
+            for source in archiveInputs {
+                for output in archiveOutputs where source != output {
+                    add(source, output, .archive, "Repackage with built-in macOS archive tools")
+                }
+            }
         }
 
         let sevenZip = statuses[.sevenZip]
