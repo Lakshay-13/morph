@@ -69,9 +69,12 @@ final class MorphFinderSync: FIFinderSync {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = false
         configuration.addsToRecentItems = false
-        NSWorkspace.shared.open(selection, withApplicationAt: helper, configuration: configuration) { _, error in
-            guard error == nil else { return }
-            NSWorkspace.shared.open([requestURL], withApplicationAt: helper, configuration: configuration)
+        // Send the selected files and conversion request in one Launch Services
+        // open operation. The helper matches both event types and stays windowless.
+        NSWorkspace.shared.open(selection + [requestURL], withApplicationAt: helper, configuration: configuration) { _, error in
+            if let error {
+                NSLog("Morph couldn't start the Finder conversion helper: %@", error.localizedDescription)
+            }
         }
     }
 

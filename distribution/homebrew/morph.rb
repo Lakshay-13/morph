@@ -21,13 +21,13 @@ cask "morph" do
 
   uninstall quit: "com.lakshaychawla.Morph"
 
-  caveats <<~EOS
-    To enable the Finder conversion submenu, open System Settings → General → Login Items & Extensions → Finder Extensions and enable Morph.
-    The submenu appears in Finder's contextual menu for files in your home folder and mounted volumes.
-  EOS
-
   zap trash: [
     "~/Library/Application Support/Morph",
     "~/Library/Preferences/com.lakshaychawla.Morph.plist",
   ]
+
+  caveats <<~EOS
+    To enable the Finder conversion submenu, open System Settings → General → Login Items & Extensions → Finder Extensions and enable Morph.
+    The submenu appears in Finder's contextual menu for files in your home folder and mounted volumes.
+  EOS
 end

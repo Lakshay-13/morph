@@ -154,6 +154,10 @@ final class MorphCheckSuite {
         let tiff = URL(fileURLWithPath: "/tmp/source.tiff")
         let docx = URL(fileURLWithPath: "/tmp/source.docx")
 
+        let pngTargets = QuickConversionCatalog.availableOutputs(for: [png], registry: registry)
+        try expect(pngTargets.map(\.fileExtension) == ["jpg", "webp", "pdf"], "A PNG selection should show only its available image/PDF targets; got \(pngTargets.map(\.fileExtension))")
+        try expect(!pngTargets.contains { $0.fileExtension == "mp3" }, "A PNG selection must not show unrelated audio outputs")
+
         let imageTargets = QuickConversionCatalog.availableOutputs(for: [png, tiff], registry: registry)
         try expect(imageTargets.map(\.fileExtension) == ["jpg"], "Finder should show only targets supported by every selected image; got \(imageTargets.map(\.fileExtension))")
 
