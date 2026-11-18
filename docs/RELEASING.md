@@ -8,9 +8,9 @@ The packaging script attempts an arm64 + x86_64 universal app, a versioned ZIP a
 MORPH_VERSION=0.1.0 MORPH_DIST_DIR="$PWD/release-output" Scripts/package-release.sh
 ```
 
-The ZIP contains `Morph.app`, the Finder Quick Action workflow, Morph's Apache license and third-party license notices. The app bundle also carries those notices in `Contents/Resources/Legal`. The ZIP is ignored by Git. Keep the exact tested archive and its checksum together. Do not publish the current ad-hoc build.
+The ZIP contains `Morph.app`, its windowless Finder conversion helper, the Finder Quick Action workflow, Morph's Apache license and third-party license notices. The app bundle also carries those notices in `Contents/Resources/Legal`. The ZIP is ignored by Git. Keep the exact tested archive and its checksum together. Do not publish the current ad-hoc build.
 
-The latest local package from commit `a7109d7` is `.build/release-a7109d7/Morph-0.1.0-macOS-universal.zip` (arm64 + x86_64), SHA-256 `e83175049431817b4713bb6fc6dff4bf8aa8b857948148244e7a9903a32b839b`. ZIP integrity, architecture slices, signature validity, license files and checksum were verified. It is a local validation artifact, not a GitHub release; it is ad-hoc signed, fails Gatekeeper assessment and must not be used for the public Cask. The draft Cask carries this local checksum as a placeholder; replace it with the final signed/notarized archive's checksum.
+The latest local package from commit `d32f369` is `.build/release-d32f369/Morph-0.1.0-macOS-universal.zip` (arm64 + x86_64), SHA-256 `b3fe4dcf51cccfec0315bb120ff421b3b08b286ce11a2e582c1e07f8ba3d4d30`. The main app and Finder helper both contain arm64 and x86_64 slices. ZIP integrity, the bundled workflow and license files, the app signature and checksum were verified. Gatekeeper rejects the ad-hoc signature. This is a local validation artifact, not a GitHub release, and must not be used for public distribution. The draft Cask carries this local checksum only as a placeholder; replace it with the final signed/notarized archive's checksum.
 
 ## Developer ID signing and notarization
 
