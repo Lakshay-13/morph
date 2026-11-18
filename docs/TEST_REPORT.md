@@ -124,3 +124,9 @@ The hosted Intel runner provides actual x86_64 conversion-runtime coverage. The 
 - `Scripts/run-checks.sh` passed after adding an explicit PNG target check: **24 passed, 0 failed, 1 skipped**. 7-Zip was skipped because it is not installed. The test suite also exercises the PNG → JPEG route and selection intersection behavior.
 - Installed the arm64 build at `~/Applications/Morph.app`. A live helper handoff converted a copied 1254×1254 PNG into a nonempty JPEG; the source hash matched the repository fixture afterward, and the main Morph app did not launch.
 - Finder's live right-click still shows only Apple's built-in **Convert Image** Quick Action; Morph's custom submenu is absent. PlugInKit registers and runs the extension, but the installed app is ad-hoc signed (`TeamIdentifier=not set`), and the machine has no usable signing identity. The Finder submenu click-through and its no-window behavior remain unverified until a valid signed build can be tested.
+
+## Apple signing portal follow-up (2026-11-18)
+
+- The user completed browser sign-in. Opening **Certificates, IDs, & Profiles** still redirects to Apple's **Need assistance with accessing your developer account?** support form rather than certificate management.
+- Xcode Manage Certificates lists an Apple Development certificate dated 2026-11-18, but its matching private key is missing. Xcode disables both **Create Apple Development** and **Delete Certificate** while this certificate remains active; `security find-identity -v -p codesigning` reports zero valid identities.
+- No certificate was revoked or created. The approved replacement workflow cannot proceed until Apple restores certificate-portal access, an eligible team becomes available, or the matching `.p12` is recovered from a backup/original keychain. Developer ID signing and notarization remain unavailable.
