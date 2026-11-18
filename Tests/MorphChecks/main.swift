@@ -27,6 +27,7 @@ final class MorphCheckSuite {
     func run() {
         test("native images and PDF") { try checkImagesAndPDF($0) }
         test("route-aware conversion presets") { _ in try checkConversionPresets() }
+        test("Finder conversion targets match the entire selection") { _ in try checkQuickConversionCatalog() }
         test("audio and video with FFmpeg") { try checkAudioVideo($0) }
         test("video trimming") { try checkVideoTrimming($0) }
         test("video compression") { try checkVideoCompression($0) }
@@ -123,6 +124,46 @@ final class MorphCheckSuite {
         try expect(!ConversionPreset.extractAudioToMP3.isAvailable(inputExtensions: ["docx"], outputExtensions: ["mp3"]), "Audio extraction preset should reject documents")
         try expect(!ConversionPreset.extractAudioToMP3.isAvailable(inputExtensions: ["gif"], outputExtensions: ["mp3"]), "Audio extraction preset should reject GIFs, which cannot contain audio")
         try expect(ConversionPreset.documentsToPDF.isAvailable(inputExtensions: ["docx"], outputExtensions: ["pdf"]), "Document preset should accept an available PDF route")
+    }
+
+    private func checkQuickConversionCatalog() throws {
+        let discoveredTargets = QuickConversionCatalog.availableOutputs(
+            for: [URL(fileURLWithPath: "/tmp/source.png")],
+            registry: registry
+        )
+        try expect(discoveredTargets.contains { $0.fileExtension == "jpg" }, "The installed capability registry should offer PNG → JPEG")
+
+        let imageMagick = EngineStatus(id: .imageMagick, executableURL: URL(fileURLWithPath: "/usr/bin/magick"))
+        let libreOffice = EngineStatus(id: .libreOffice, executableURL: URL(fileURLWithPath: "/usr/bin/soffice"))
+        let builtInStatuses: [EngineID: EngineStatus] = [
+            .nativeImage: EngineStatus(id: .nativeImage),
+            .nativePDF: EngineStatus(id: .nativePDF),
+        ]
+        let routes = [
+            ConversionRoute(inputExtension: "png", output: MorphFormat("jpg", "JPEG", .image), engine: .nativeImage, description: "Built-in image conversion"),
+            ConversionRoute(inputExtension: "png", output: MorphFormat("webp", "WebP", .image), engine: .imageMagick, description: "Optional image conversion"),
+            ConversionRoute(inputExtension: "png", output: MorphFormat("pdf", "PDF", .document), engine: .nativePDF, description: "Built-in PDF export"),
+            ConversionRoute(inputExtension: "tiff", output: MorphFormat("jpg", "JPEG", .image), engine: .nativeImage, description: "Built-in image conversion"),
+            ConversionRoute(inputExtension: "docx", output: MorphFormat("pdf", "PDF", .document), engine: .libreOffice, description: "Optional document conversion"),
+        ]
+        var allStatuses = builtInStatuses
+        allStatuses[.imageMagick] = imageMagick
+        allStatuses[.libreOffice] = libreOffice
+        let registry = EngineRegistry(statuses: allStatuses, routes: routes)
+        let png = URL(fileURLWithPath: "/tmp/source.png")
+        let tiff = URL(fileURLWithPath: "/tmp/source.tiff")
+        let docx = URL(fileURLWithPath: "/tmp/source.docx")
+
+        let imageTargets = QuickConversionCatalog.availableOutputs(for: [png, tiff], registry: registry)
+        try expect(imageTargets.map(\.fileExtension) == ["jpg"], "Finder should show only targets supported by every selected image; got \(imageTargets.map(\.fileExtension))")
+
+        let mixedTargets = QuickConversionCatalog.availableOutputs(for: [png, docx], registry: registry)
+        try expect(mixedTargets.map(\.fileExtension) == ["pdf"], "Finder should retain a shared target supported across mixed inputs")
+
+        let noOptionalEngineRegistry = EngineRegistry(statuses: builtInStatuses, routes: routes)
+        let installedOnlyTargets = QuickConversionCatalog.availableOutputs(for: [png], registry: noOptionalEngineRegistry)
+        try expect(installedOnlyTargets.map(\.fileExtension) == ["jpg", "pdf"], "Finder must hide routes whose optional conversion engine is unavailable; got \(installedOnlyTargets.map(\.fileExtension))")
+        try expect(QuickConversionCatalog.availableOutputs(for: [], registry: registry).isEmpty, "Finder should not offer formats for an empty selection")
     }
 
     private func checkAudioVideo(_ folder: URL) throws {

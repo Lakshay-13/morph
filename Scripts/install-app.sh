@@ -6,6 +6,7 @@ APP_SOURCE="${MORPH_APP_SOURCE:-$REPO_ROOT/dist/Morph.app}"
 APP_DEST="$HOME/Applications/Morph.app"
 WORKFLOW_SOURCE="$REPO_ROOT/Resources/QuickActions/Convert with Morph.workflow"
 WORKFLOW_DEST="$HOME/Library/Services/Convert with Morph.workflow"
+QUICK_CONVERT_HELPER="$APP_SOURCE/Contents/Helpers/MorphQuickConvert.app"
 
 if [[ ! -d "$APP_SOURCE" || ! -f "$APP_SOURCE/Contents/Info.plist" ]]; then
   printf 'Build Morph first or set MORPH_APP_SOURCE to a built Morph.app: %s\n' "$APP_SOURCE" >&2
@@ -17,6 +18,10 @@ if [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_SOURCE/Con
 fi
 if [[ ! -d "$WORKFLOW_SOURCE" ]]; then
   printf 'Missing Finder Quick Action bundle: %s\n' "$WORKFLOW_SOURCE" >&2
+  exit 1
+fi
+if [[ ! -x "$QUICK_CONVERT_HELPER/Contents/MacOS/MorphQuickConvert" || ! -f "$QUICK_CONVERT_HELPER/Contents/Info.plist" ]]; then
+  printf 'The windowless Finder conversion helper is missing from %s\n' "$APP_SOURCE" >&2
   exit 1
 fi
 
@@ -43,6 +48,7 @@ fi
 
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 "$LSREGISTER" -f "$APP_DEST"
+"$LSREGISTER" -f "$APP_DEST/Contents/Helpers/MorphQuickConvert.app"
 open "$APP_DEST"
 printf 'Installed Morph at %s\n' "$APP_DEST"
 printf 'Installed Finder Quick Action at %s\n' "$WORKFLOW_DEST"

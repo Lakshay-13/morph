@@ -19,7 +19,6 @@ struct MorphApp: App {
 
 final class MorphAppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.servicesProvider = self
         NSUpdateDynamicServices()
     }
 
@@ -37,24 +36,5 @@ final class MorphAppDelegate: NSObject, NSApplicationDelegate {
         MorphModel.shared.importFiles(files)
         application.activate(ignoringOtherApps: true)
         application.windows.first?.makeKeyAndOrderFront(nil)
-    }
-
-    @objc func convertFiles(
-        _ pasteboard: NSPasteboard,
-        userData: String,
-        error: AutoreleasingUnsafeMutablePointer<NSString?>
-    ) {
-        let fileURLs = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL]
-        let filePaths = pasteboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String]
-        let urls = fileURLs ?? filePaths?.map { URL(fileURLWithPath: $0) } ?? []
-        guard !urls.isEmpty else {
-            error.pointee = "Morph did not receive a file from Finder." as NSString
-            return
-        }
-        DispatchQueue.main.async {
-            MorphModel.shared.importFiles(urls)
-            NSApp.activate(ignoringOtherApps: true)
-            NSApp.windows.first?.makeKeyAndOrderFront(nil)
-        }
     }
 }

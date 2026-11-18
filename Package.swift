@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "MorphCore", targets: ["MorphCore"]),
         .executable(name: "Morph", targets: ["MorphApp"]),
+        .executable(name: "MorphQuickConvert", targets: ["MorphQuickConvert"]),
         .executable(name: "MorphChecks", targets: ["MorphChecks"]),
     ],
     dependencies: [
@@ -22,6 +23,7 @@ let package = Package(
             ]
         ),
         .executableTarget(name: "MorphApp", dependencies: ["MorphCore"]),
+        .executableTarget(name: "MorphQuickConvert", dependencies: ["MorphCore"]),
         .executableTarget(name: "MorphChecks", dependencies: ["MorphCore"], path: "Tests/MorphChecks"),
     ],
     swiftLanguageVersions: [.v5]

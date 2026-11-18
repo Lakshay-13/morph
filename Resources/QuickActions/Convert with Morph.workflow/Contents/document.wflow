@@ -60,7 +60,6 @@
 				<dict>
 					<key>COMMAND_STRING</key>
 					<string>if (( $# == 0 )); then
-  /usr/bin/open -a Morph
   exit 0
 fi
 set -e
@@ -75,7 +74,7 @@ for input in "$@"; do
   /usr/bin/plutil -insert "paths.$index" -string "$input" "$manifest"
   (( index += 1 ))
 done
-/usr/bin/open "morph://convert?manifest=$token"</string>
+/usr/bin/open "morphquick://convert?manifest=$token"</string>
 					<key>CheckedForUserDefaultShell</key>
 					<true/>
 					<key>inputMethod</key>
@@ -92,7 +91,7 @@ done
 				<key>CanShowSelectedItemsWhenRun</key>
 				<false/>
 				<key>CanShowWhenRun</key>
-				<true/>
+				<false/>
 				<key>Category</key>
 				<array>
 					<string>AMCategoryUtilities</string>

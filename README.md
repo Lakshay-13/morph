@@ -8,7 +8,7 @@ Morph is a native SwiftUI macOS utility for converting and transforming files wi
 
 ## What works today
 
-- Finder Quick Action: right-click a file, choose **Quick Actions → Convert with Morph**, then choose an available format in Morph.
+- Finder Quick Action: right-click selected files, choose **Quick Actions → Convert with Morph**, then choose a supported output from Morph's small native popover. The main Morph window stays closed unless you choose **Open Morph with These Files…**.
 - Drag and drop or select multiple files in the app. Mixed selections can be batch-converted when every input shares the chosen output route.
 - Runtime format discovery from Apple ImageIO, FFmpeg codecs and containers, ImageMagick, Pandoc, Poppler and LibreOffice.
 - Fallback to another registered engine when a higher-priority adapter fails and a second route exists.
@@ -25,9 +25,9 @@ Morph is a native SwiftUI macOS utility for converting and transforming files wi
 
 ## Finder workflow
 
-The primary Finder entry is a Quick Action installed to `~/Library/Services`. It writes only the selected file paths to a short-lived property list in Morph's Application Support folder, then opens Morph's local `morph://` handoff URL. Morph validates the manifest identifier, reads and removes the manifest, and opens its format picker. The workflow is **right-click → Quick Actions → Convert with Morph → choose format**. The app does not insert a custom top-level `Convert To` submenu into Finder.
+The primary Finder entry is a Quick Action installed to `~/Library/Services`. It writes only selected file paths to a short-lived property list in Morph's Application Support folder, then opens the accessory conversion helper using a local `morphquick://` handoff URL. The helper validates and removes the manifest, detects the selected file formats, and shows output formats supported by every selected file and the engines installed on this Mac. Choosing a format converts the files without opening the main Morph window; **Open Morph with These Files…** remains available as an explicit choice.
 
-Finder Sync is intended for sync-state and sync controls, not general-purpose Finder interface changes. AppKit Services also does not provide Finder with a nested format submenu, so Morph uses a Quick Action and keeps format selection in the app. See [Apple's Finder Sync guidance](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/Finder.html) and [Services menu documentation](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/SysServices/Articles/menu.html).
+The format picker appears as a compact native popover after the Quick Action runs. Automator Quick Actions do not expose an API for inserting a dynamic child menu into Finder's built-in **Quick Actions** list, so Morph cannot place the formats directly inside that Finder submenu. Finder Sync is intended for sync-state and sync controls in monitored folders; Morph keeps the actual conversion in its local helper. See [Apple's Finder Sync guidance](https://developer.apple.com/library/archive/documentation/General/Conceptual/ExtensibilityPG/Finder.html) and [Services menu documentation](https://developer.apple.com/library/archive/documentation/Cocoa/Conceptual/SysServices/Articles/menu.html).
 
 ## Format availability
 

@@ -6,22 +6,26 @@
 - **EngineRegistry** discovers local binaries and probes their available formats. A route is created only when the corresponding engine is installed and advertises the required input/output capability. FFmpeg output routes also require the encoder used by Morph's adapter.
 - **ConversionService** resolves an input extension, tries candidate routes in deterministic priority order, runs each registered `ConversionEngine`, validates the staged output and moves the first valid result to a unique destination. A failed adapter's staged output is removed before the next route is attempted. The `ConversionEngine` protocol supports adding independent adapters.
 - **MorphApp** provides file selection/drop, Finder file-open intake, format selection, batch execution, history, settings and explicit Homebrew actions.
+- **MorphQuickConvert** is a windowless accessory helper for Finder conversion. It uses the same `EngineRegistry` and `ConversionService` as the main app, filters output formats across the whole selection, and presents a compact native popover.
 - **MorphFileOperations** holds additional operations that are not simple format edges: read-only image/PDF metadata inspection, image resize, previewed batch rename copies, PDF merge/page-range extraction/split/compression, ZIP extraction and FFmpeg video trimming. Process-backed operations use fixed executable arguments and write to validated staging files.
 - **StructuredDataEngine** handles local JSON, YAML/YML, TOML, CSV/TSV and XML routes. Yams (with its bundled LibYAML) and swift-toml (with bundled toml++) are pinned SwiftPM dependencies; they are statically linked and their license texts ship in the app bundle. Parsing is size/depth/collection limited, and conversions reject values the target representation cannot express.
 
 ## Data flow
 
 ```text
-Finder Quick Action or file picker
-              │ validated file URLs
+Finder Quick Action ── selected paths in short-lived manifest
+              │ morphquick:// handoff
               ▼
-        SwiftUI MorphApp ── reads EngineRegistry routes
+      MorphQuickConvert accessory ── reads EngineRegistry routes
+              │ filtered native format popover
               │ ConversionRequest
               ▼
         ConversionService ── chooses ConversionEngine
               │ fixed executable + argument array, no shell
               ▼
      unique staged output → validator → collision-safe final path
+
+The main SwiftUI application is opened only when the user explicitly chooses **Open Morph with These Files…** from the popover, or launches Morph directly.
 ```
 
 The source file is not used as an output path. Each engine attempt writes inside a unique hidden staging folder under the selected output directory, so its temporary files stay on the destination volume and are removed after success, failure or cancellation. Successful conversions validate before the final move. Collisions receive a numeric suffix rather than replacing a file.
@@ -30,9 +34,9 @@ Batch rename is available from the app's Operations page. Morph previews a numbe
 
 ## Finder integration
 
-The primary Finder entry is the Automator Quick Action at `Resources/QuickActions/Convert with Morph.workflow`. It receives selected paths as arguments, writes them to a short-lived property list under `~/Library/Application Support/Morph/QuickActions`, then opens a `morph://convert?manifest=<UUID>` URL. The SwiftUI scene validates the URL and UUID, reads and removes the manifest, then shows the format picker. No file data is copied into the manifest. `Scripts/install-app.sh` installs the workflow to `~/Library/Services`; its ownership marker lets Morph update its own workflow while refusing to replace a different action. The Cask draft uses Homebrew's `service` artifact so installation and removal are managed by Homebrew.
+The primary Finder entry is the Automator Quick Action at `Resources/QuickActions/Convert with Morph.workflow`. It receives selected paths as arguments, writes them to a short-lived property list under `~/Library/Application Support/Morph/QuickActions`, then opens `morphquick://convert?manifest=<UUID>`. The accessory helper validates the URL and UUID, reads and removes the manifest, discovers installed engine capabilities, and intersects supported output formats across the selected files. It presents these choices in a transient native popover and runs the selected format through `ConversionService`. No file data is copied into the manifest. `Scripts/install-app.sh` installs the workflow to `~/Library/Services`; its ownership marker lets Morph update its own workflow while refusing to replace a different action. The Cask draft uses Homebrew's `service` artifact so installation and removal are managed by Homebrew.
 
-The action appears under Finder's **Quick Actions** context menu. Finder Sync is intended for sync-related Finder UI, so Morph uses a Quick Action for the file operation. It does not insert a custom top-level `Convert To` submenu into Finder; the format choice happens in Morph.
+The action appears under Finder's **Quick Actions** context menu. Finder Sync is intended for sync-related Finder UI, so Morph uses a Quick Action for the file operation. macOS does not let an Automator Quick Action dynamically add its own nested output-format submenu to Finder's built-in menu; the output picker therefore appears as a compact popover after the user clicks the Morph action. The main Morph window stays closed for this workflow.
 
 ## Engine discovery and selection
 
@@ -59,4 +63,4 @@ The engine screen is the place to manage packages. If PDF compression is request
 
 ## Product limits
 
-The current package has no conversion-plugin loader, sandbox or update service. Engines are fixed adapters in the application. The Quick Action passes file paths to the installed application and cannot add an arbitrary custom top-level Finder submenu. The package and release scripts retain this boundary rather than claiming unsupported Finder UI.
+The current package has no conversion-plugin loader, sandbox or update service. Engines are fixed adapters in the application. The Quick Action passes file paths to the accessory helper and cannot add a dynamic nested format menu directly inside Finder's built-in **Quick Actions** list. The package and release scripts retain this boundary rather than claiming unsupported Finder UI.
