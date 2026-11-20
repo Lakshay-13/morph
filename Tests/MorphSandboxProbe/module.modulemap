@@ -1,0 +1,5 @@
+module MorphSandboxProbe [system] {
+    header "sandbox_probe.h"
+    link "System"
+    export *
+}

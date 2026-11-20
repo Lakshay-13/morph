@@ -2,6 +2,7 @@ import AppKit
 import Combine
 import Foundation
 import MorphCore
+import os
 
 enum OutputMode: String, CaseIterable, Identifiable, Codable {
     case alongsideOriginal = "Beside each original"
@@ -47,6 +48,7 @@ struct MorphSettings: Codable, Sendable {
     var revealOutputAfterConversion: Bool
     var pdfCompressionPreset: PDFCompressionPreset
     var finderHiddenOutputExtensions: Set<String>
+    var stripLocationMetadata: Bool
 
     init(
         outputMode: OutputMode = .alongsideOriginal,
@@ -54,7 +56,8 @@ struct MorphSettings: Codable, Sendable {
         imageQuality: Double = 0.85,
         revealOutputAfterConversion: Bool = true,
         pdfCompressionPreset: PDFCompressionPreset = .balanced,
-        finderHiddenOutputExtensions: Set<String> = []
+        finderHiddenOutputExtensions: Set<String> = [],
+        stripLocationMetadata: Bool = true
     ) {
         self.outputMode = outputMode
         self.customOutputPath = customOutputPath
@@ -62,10 +65,11 @@ struct MorphSettings: Codable, Sendable {
         self.revealOutputAfterConversion = revealOutputAfterConversion
         self.pdfCompressionPreset = pdfCompressionPreset
         self.finderHiddenOutputExtensions = Set(finderHiddenOutputExtensions.map { $0.lowercased() })
+        self.stripLocationMetadata = stripLocationMetadata
     }
 
     private enum CodingKeys: String, CodingKey {
-        case outputMode, customOutputPath, imageQuality, revealOutputAfterConversion, pdfCompressionPreset, finderHiddenOutputExtensions
+        case outputMode, customOutputPath, imageQuality, revealOutputAfterConversion, pdfCompressionPreset, finderHiddenOutputExtensions, stripLocationMetadata
     }
 
     init(from decoder: Decoder) throws {
@@ -76,16 +80,11 @@ struct MorphSettings: Codable, Sendable {
         revealOutputAfterConversion = try values.decodeIfPresent(Bool.self, forKey: .revealOutputAfterConversion) ?? true
         pdfCompressionPreset = try values.decodeIfPresent(PDFCompressionPreset.self, forKey: .pdfCompressionPreset) ?? .balanced
         finderHiddenOutputExtensions = Set((try values.decodeIfPresent(Set<String>.self, forKey: .finderHiddenOutputExtensions) ?? []).map { $0.lowercased() })
+        stripLocationMetadata = try values.decodeIfPresent(Bool.self, forKey: .stripLocationMetadata) ?? true
     }
 }
 
-struct HistoryItem: Codable, Identifiable, Sendable {
-    let id: UUID
-    let inputName: String
-    let outputPath: String
-    let engineName: String
-    let date: Date
-}
+typealias HistoryItem = ConversionHistoryEntry
 
 struct MetadataReport: Identifiable, Sendable {
     let id = UUID()
@@ -115,20 +114,27 @@ final class MorphModel: ObservableObject {
     @Published private(set) var progress: Double = 0
     @Published private(set) var currentFileName: String?
     @Published private(set) var conversionMessage: String?
-    @Published private(set) var lastError: String?
+    @Published private(set) var hasError = false
     @Published private(set) var history: [HistoryItem] = []
     @Published private(set) var metadataReports: [MetadataReport] = []
     @Published var metadataSheet: MetadataSheet?
     @Published private(set) var updatesAvailable: Set<EngineID> = []
     @Published private(set) var activeEngineAction: EngineID?
+    @Published private(set) var isCheckingAllEngineUpdates = false
+    @Published private(set) var isUpdatingAllEngines = false
+    @Published private(set) var homebrewExecutableApproved = false
     @Published private(set) var isRunningUtilityCancellable = false
     @Published var settings: MorphSettings { didSet { saveSettings() } }
     @Published var selectedSection = AppSection.overview
 
     private var cancellation: CancellationToken?
     private var utilityCancellation: CancellationToken?
+    private var persistedHistoryIDs = Set<UUID>()
+    private let logger = Logger(subsystem: "com.lakshaychawla.Morph", category: "Application")
     private let settingsKey = "com.lakshaychawla.Morph.settings"
     private let historyURL: URL
+
+    var hasActiveWork: Bool { isConverting || isRunningUtility || activeEngineAction != nil }
 
     private init() {
         if let data = UserDefaults.standard.data(forKey: "com.lakshaychawla.Morph.settings"),
@@ -239,34 +245,30 @@ final class MorphModel: ObservableObject {
     }
 
     func importFiles(_ urls: [URL]) {
-        selectedFiles = urls.filter { FileManager.default.fileExists(atPath: $0.path) }
-        selectedOutputExtension = nil
-        selectedConversionPreset = nil
+        replaceSelectedFiles(urls)
         selectedSection = .convert
-        lastError = nil
     }
 
-    func handleExternalURL(_ url: URL) {
-        guard url.scheme == "morph", url.host == "convert",
-              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let token = components.queryItems?.first(where: { $0.name == "manifest" })?.value,
-              let uuid = UUID(uuidString: token) else { return }
-
-        let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("Morph/QuickActions", isDirectory: true)
-        let manifestURL = directory.appendingPathComponent("\(uuid.uuidString.lowercased()).plist")
-        guard manifestURL.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL,
-              let data = try? Data(contentsOf: manifestURL),
-              let manifest = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
-              let paths = manifest["paths"] as? [String], !paths.isEmpty else {
-            selectedSection = .convert
-            lastError = "Morph could not read the selected files from Finder. Try adding them again."
-            return
+    func replaceSelectedFiles(_ urls: [URL]) {
+        var seenPaths = Set<String>()
+        selectedFiles = urls.filter { url in
+            FileManager.default.fileExists(atPath: url.path) && seenPaths.insert(url.standardizedFileURL.path).inserted
         }
+        selectedOutputExtension = nil
+        selectedConversionPreset = nil
+        hasError = false
+    }
 
-        try? FileManager.default.removeItem(at: manifestURL)
-        importFiles(paths.map { URL(fileURLWithPath: $0) })
-        if selectedFiles.isEmpty { lastError = "The selected files are no longer available." }
+    func appendFiles(_ urls: [URL]) {
+        var seenPaths = Set(selectedFiles.map { $0.standardizedFileURL.path })
+        let additions = urls.filter { url in
+            FileManager.default.fileExists(atPath: url.path) && seenPaths.insert(url.standardizedFileURL.path).inserted
+        }
+        guard !additions.isEmpty else { return }
+        selectedFiles.append(contentsOf: additions)
+        selectedOutputExtension = nil
+        selectedConversionPreset = nil
+        hasError = false
     }
 
     func removeFile(_ url: URL) {
@@ -310,9 +312,11 @@ final class MorphModel: ObservableObject {
     private func refreshEngines(onCompletion: (() -> Void)?) {
         isDiscovering = true
         Task.detached(priority: .utility) {
-            let freshRegistry = EngineRegistry.discover()
+            let freshRegistry = EngineRegistry.discover(forceCapabilityRefresh: true)
+            let brewApproved = EngineExecutableTrust.homebrewExecutable().map(EngineExecutableTrust.isHomebrewApproved) ?? false
             await MainActor.run {
                 self.registry = freshRegistry
+                self.homebrewExecutableApproved = brewApproved
                 self.isDiscovering = false
                 self.publishFinderSyncPreferences()
                 onCompletion?()
@@ -334,11 +338,12 @@ final class MorphModel: ObservableObject {
         progress = 0
         currentFileName = nil
         conversionMessage = "Preparing conversion…"
-        lastError = nil
+        hasError = false
         let token = CancellationToken()
         cancellation = token
         let currentSettings = settings
         let jobs = inputs.map { ($0, Self.outputDirectory(for: $0, settings: currentSettings)) }
+        let outputNotice = Self.outputDirectoryNotice(for: currentSettings, inputs: inputs)
 
         Task.detached(priority: .userInitiated) {
             let service = ConversionService(registry: registry)
@@ -355,7 +360,13 @@ final class MorphModel: ObservableObject {
                 do {
                     let selectedFormat = registry.availableOutputs(for: input).first(where: { $0.output.fileExtension == format.fileExtension })?.output ?? format
                     let imageQuality = preset?.imageQualityOverride ?? currentSettings.imageQuality
-                    let request = ConversionRequest(inputURL: input, outputFormat: selectedFormat, outputDirectory: job.1, imageQuality: imageQuality)
+                    let request = ConversionRequest(
+                        inputURL: input,
+                        outputFormat: selectedFormat,
+                        outputDirectory: job.1,
+                        imageQuality: imageQuality,
+                        stripLocationMetadata: currentSettings.stripLocationMetadata
+                    )
                     results.append(try service.convert(request, cancellation: token))
                 } catch {
                     if !token.isCancelled {
@@ -378,12 +389,12 @@ final class MorphModel: ObservableObject {
                     self.saveHistory()
                 }
                 if token.isCancelled {
-                    self.conversionMessage = "Cancelled. Originals were left unchanged."
+                    self.conversionMessage = "Cancelled. Originals were left unchanged.\(outputNotice.map { " " + $0 } ?? "")"
                 } else if completedFailures.isEmpty {
-                    self.conversionMessage = "Finished \(completedResults.count) conversion\(completedResults.count == 1 ? "" : "s")."
+                    self.conversionMessage = "Finished \(completedResults.count) conversion\(completedResults.count == 1 ? "" : "s").\(outputNotice.map { " " + $0 } ?? "")"
                 } else {
-                    self.lastError = completedFailures.joined(separator: "\n\n")
-                    self.conversionMessage = "Finished with \(completedFailures.count) error\(completedFailures.count == 1 ? "" : "s")."
+                    self.recordError(completedFailures.joined(separator: "\n\n"), context: "File conversion")
+                    self.conversionMessage = "Finished with errors. Details were logged.\(outputNotice.map { " " + $0 } ?? "")"
                 }
                 if currentSettings.revealOutputAfterConversion, let output = completedResults.last?.outputURL {
                     NSWorkspace.shared.activateFileViewerSelecting([output])
@@ -438,12 +449,13 @@ final class MorphModel: ObservableObject {
         let inputs = selectedFiles
         let currentSettings = settings
         let outputDirectories = inputs.map { Self.outputDirectory(for: $0, settings: currentSettings) }
+        let outputNotice = Self.outputDirectoryNotice(for: currentSettings, inputs: inputs)
         isRunningUtility = true
         let utilityToken = CancellationToken()
-        utilityCancellation = [.compressPDF, .compressVideo].contains(action) ? utilityToken : nil
-        isRunningUtilityCancellable = [.compressPDF, .compressVideo].contains(action)
+        utilityCancellation = [.splitPDF, .extractZIP, .compressPDF, .compressVideo].contains(action) ? utilityToken : nil
+        isRunningUtilityCancellable = [.splitPDF, .extractZIP, .compressPDF, .compressVideo].contains(action)
         conversionMessage = "Preparing \(action.rawValue.lowercased())…"
-        lastError = nil
+        hasError = false
 
         Task.detached(priority: .userInitiated) {
             do {
@@ -456,7 +468,7 @@ final class MorphModel: ObservableObject {
                 case .mergePDFs:
                     outputs = [try MorphFileOperations.mergePDFs(inputs, outputDirectory: outputDirectories.first)]
                 case .splitPDF:
-                    outputs = try MorphFileOperations.splitPDF(inputs[0], outputDirectory: outputDirectories[0])
+                    outputs = try MorphFileOperations.splitPDF(inputs[0], outputDirectory: outputDirectories[0], cancellation: utilityToken)
                 case .compressPDF:
                     outputs = [try MorphFileOperations.compressPDF(
                         inputs[0],
@@ -465,7 +477,7 @@ final class MorphModel: ObservableObject {
                         cancellation: utilityToken
                     )]
                 case .extractZIP:
-                    outputs = [try MorphFileOperations.extractZIP(inputs[0], outputDirectory: outputDirectories[0])]
+                    outputs = [try MorphFileOperations.extractZIP(inputs[0], outputDirectory: outputDirectories[0], cancellation: utilityToken)]
                 case .inspectMetadata:
                     outputs = []
                 case .editMetadata:
@@ -481,7 +493,7 @@ final class MorphModel: ObservableObject {
                     self.isRunningUtility = false
                     self.utilityCancellation = nil
                     self.isRunningUtilityCancellable = false
-                    self.conversionMessage = "Created \(outputs.count) output item\(outputs.count == 1 ? "" : "s")."
+                    self.conversionMessage = "Created \(outputs.count) output item\(outputs.count == 1 ? "" : "s").\(outputNotice.map { " " + $0 } ?? "")"
                     self.history.insert(contentsOf: outputs.map {
                         let engine: EngineID = switch action {
                         case .resizeImages: .nativeImage
@@ -508,13 +520,20 @@ final class MorphModel: ObservableObject {
                     self.utilityCancellation = nil
                     self.isRunningUtilityCancellable = false
                     if let morphError = error as? MorphError, case .cancelled = morphError {
-                        self.lastError = nil
-                        self.conversionMessage = action == .compressVideo
-                            ? "Video compression cancelled. Originals were left unchanged."
-                            : "PDF compression cancelled. The original was left unchanged."
+                        self.hasError = false
+                        switch action {
+                        case .compressVideo: self.conversionMessage = "Video compression cancelled. Originals were left unchanged."
+                        case .compressPDF: self.conversionMessage = "PDF compression cancelled. The original was left unchanged."
+                        case .splitPDF: self.conversionMessage = "PDF splitting cancelled. The original was left unchanged."
+                        case .extractZIP: self.conversionMessage = "ZIP extraction cancelled. The original was left unchanged."
+                        default: self.conversionMessage = "Operation cancelled. The original was left unchanged."
+                        }
+                        if let outputNotice, let message = self.conversionMessage {
+                            self.conversionMessage = message + " " + outputNotice
+                        }
                     } else {
-                        self.lastError = error.localizedDescription
-                        self.conversionMessage = "The operation could not be completed."
+                        self.recordError(error.localizedDescription, context: action.rawValue)
+                        self.conversionMessage = "The operation could not be completed. Details were logged.\(outputNotice.map { " " + $0 } ?? "")"
                     }
                 }
             }
@@ -522,6 +541,11 @@ final class MorphModel: ObservableObject {
     }
 
     func cancelUtility() {
+        utilityCancellation?.cancel()
+    }
+
+    func cancelCancellableWorkForTermination() {
+        cancellation?.cancel()
         utilityCancellation?.cancel()
     }
 
@@ -541,12 +565,13 @@ final class MorphModel: ObservableObject {
         do {
             plan = try batchRenamePlan(inputs: inputs, prefix: prefix)
         } catch {
-            lastError = error.localizedDescription
+            recordError(error.localizedDescription, context: "Batch rename planning")
             conversionMessage = "Review the selected files and name prefix."
             return
         }
 
         let currentSettings = settings
+        let outputNotice = Self.outputDirectoryNotice(for: currentSettings, inputs: inputs)
         let utilityToken = CancellationToken()
         utilityCancellation = utilityToken
         isRunningUtility = true
@@ -554,7 +579,7 @@ final class MorphModel: ObservableObject {
         progress = 0
         currentFileName = nil
         conversionMessage = "Preparing renamed copies…"
-        lastError = nil
+        hasError = false
 
         Task.detached(priority: .userInitiated) {
             var completed: [(BatchRenameTarget, URL)] = []
@@ -600,12 +625,12 @@ final class MorphModel: ObservableObject {
                 }
 
                 if utilityToken.isCancelled {
-                    self.conversionMessage = "Cancelled after creating \(finished.count) renamed cop\(finished.count == 1 ? "y" : "ies"). Originals were left unchanged."
+                    self.conversionMessage = "Cancelled after creating \(finished.count) renamed cop\(finished.count == 1 ? "y" : "ies"). Originals were left unchanged.\(outputNotice.map { " " + $0 } ?? "")"
                 } else if failed.isEmpty {
-                    self.conversionMessage = "Created \(finished.count) renamed cop\(finished.count == 1 ? "y" : "ies"). Originals were left unchanged."
+                    self.conversionMessage = "Created \(finished.count) renamed cop\(finished.count == 1 ? "y" : "ies"). Originals were left unchanged.\(outputNotice.map { " " + $0 } ?? "")"
                 } else {
-                    self.lastError = failed.joined(separator: "\n\n")
-                    self.conversionMessage = "Created \(finished.count) renamed copies; \(failed.count) file\(failed.count == 1 ? "" : "s") failed. Originals were left unchanged."
+                    self.recordError(failed.joined(separator: "\n\n"), context: "Batch rename")
+                    self.conversionMessage = "Some renamed copies could not be created. Details were logged. Originals were unchanged.\(outputNotice.map { " " + $0 } ?? "")"
                 }
                 if currentSettings.revealOutputAfterConversion, !finished.isEmpty {
                     NSWorkspace.shared.activateFileViewerSelecting(finished.map { $0.1 })
@@ -617,20 +642,27 @@ final class MorphModel: ObservableObject {
     private func inspectMetadata(for inputs: [URL]) {
         isRunningUtility = true
         conversionMessage = "Reading file metadata…"
-        lastError = nil
+        hasError = false
         Task.detached(priority: .userInitiated) {
+            var errors: [String] = []
             let reports = inputs.map { input -> MetadataReport in
                 do {
                     return MetadataReport(fileName: input.lastPathComponent, entries: try MorphFileOperations.inspectMetadata(input), error: nil)
                 } catch {
-                    return MetadataReport(fileName: input.lastPathComponent, entries: [], error: error.localizedDescription)
+                    errors.append("\(input.lastPathComponent): \(error.localizedDescription)")
+                    return MetadataReport(fileName: input.lastPathComponent, entries: [], error: "Metadata could not be read. Details were logged.")
                 }
             }
+            let capturedErrors = errors
+            let capturedReports = reports
             await MainActor.run {
-                self.metadataReports = reports
+                if !capturedErrors.isEmpty { self.recordError(capturedErrors.joined(separator: "\n\n"), context: "Metadata inspection") }
+                self.metadataReports = capturedReports
                 self.metadataSheet = .inspector
                 self.isRunningUtility = false
-                self.conversionMessage = "Read metadata from \(reports.count) file\(reports.count == 1 ? "" : "s"). Originals were not changed."
+                self.conversionMessage = capturedErrors.isEmpty
+                    ? "Read metadata from \(capturedReports.count) file\(capturedReports.count == 1 ? "" : "s"). Originals were not changed."
+                    : "Some metadata could not be read. Details were logged."
             }
         }
     }
@@ -641,17 +673,23 @@ final class MorphModel: ObservableObject {
         let inputs = selectedFiles
         let currentSettings = settings
         let outputDirectories = inputs.map { Self.outputDirectory(for: $0, settings: currentSettings) }
+        let outputNotice = Self.outputDirectoryNotice(for: currentSettings, inputs: inputs)
         isRunningUtility = true
         isRunningUtilityCancellable = false
         conversionMessage = "Writing metadata copies…"
-        lastError = nil
+        hasError = false
 
         Task.detached(priority: .userInitiated) {
             var completed: [(URL, URL)] = []
             var failures: [String] = []
             for (input, outputDirectory) in zip(inputs, outputDirectories) {
                 do {
-                    let output = try MorphFileOperations.writeMetadataCopy(input, edits: edits, outputDirectory: outputDirectory)
+                    let output = try MorphFileOperations.writeMetadataCopy(
+                        input,
+                        edits: edits,
+                        outputDirectory: outputDirectory,
+                        stripLocationMetadata: currentSettings.stripLocationMetadata
+                    )
                     completed.append((input, output))
                 } catch {
                     failures.append("\(input.lastPathComponent): \(error.localizedDescription)")
@@ -676,13 +714,13 @@ final class MorphModel: ObservableObject {
                 self.saveHistory()
 
                 if failedCopies.isEmpty {
-                    self.conversionMessage = "Created metadata copies for \(finishedCopies.count) file\(finishedCopies.count == 1 ? "" : "s"). Originals were unchanged."
+                    self.conversionMessage = "Created metadata copies for \(finishedCopies.count) file\(finishedCopies.count == 1 ? "" : "s"). Originals were unchanged.\(outputNotice.map { " " + $0 } ?? "")"
                 } else if finishedCopies.isEmpty {
-                    self.conversionMessage = "Metadata editing failed. Originals were unchanged."
-                    self.lastError = failedCopies.joined(separator: "\n\n")
+                    self.recordError(failedCopies.joined(separator: "\n\n"), context: "Metadata editing")
+                    self.conversionMessage = "Metadata editing failed. Details were logged. Originals were unchanged.\(outputNotice.map { " " + $0 } ?? "")"
                 } else {
-                    self.conversionMessage = "Created \(finishedCopies.count) metadata cop\(finishedCopies.count == 1 ? "y" : "ies"); \(failedCopies.count) failed. Originals were unchanged."
-                    self.lastError = failedCopies.joined(separator: "\n\n")
+                    self.recordError(failedCopies.joined(separator: "\n\n"), context: "Metadata editing")
+                    self.conversionMessage = "Some metadata copies could not be created. Details were logged. Originals were unchanged.\(outputNotice.map { " " + $0 } ?? "")"
                 }
                 if currentSettings.revealOutputAfterConversion, let output = finishedCopies.last?.1 {
                     NSWorkspace.shared.activateFileViewerSelecting([output])
@@ -709,19 +747,24 @@ final class MorphModel: ObservableObject {
 
     private func extractPDFPages(pageRange: String, input: URL) {
         guard !isConverting, !isRunningUtility, activeEngineAction == nil else { return }
-        let outputDirectory = Self.outputDirectory(for: input, settings: settings)
         let currentSettings = settings
+        let outputDirectory = Self.outputDirectory(for: input, settings: currentSettings)
+        let outputNotice = Self.outputDirectoryNotice(for: currentSettings, inputs: [input])
         isRunningUtility = true
-        isRunningUtilityCancellable = false
+        let utilityToken = CancellationToken()
+        utilityCancellation = utilityToken
+        isRunningUtilityCancellable = true
         conversionMessage = "Extracting PDF pages…"
-        lastError = nil
+        hasError = false
 
         Task.detached(priority: .userInitiated) {
             do {
-                let output = try MorphFileOperations.extractPDFPages(input, pageRange: pageRange, outputDirectory: outputDirectory)
+                let output = try MorphFileOperations.extractPDFPages(input, pageRange: pageRange, outputDirectory: outputDirectory, cancellation: utilityToken)
                 await MainActor.run {
                     self.isRunningUtility = false
-                    self.conversionMessage = "Extracted selected PDF pages."
+                    self.utilityCancellation = nil
+                    self.isRunningUtilityCancellable = false
+                    self.conversionMessage = "Extracted selected PDF pages.\(outputNotice.map { " " + $0 } ?? "")"
                     self.history.insert(HistoryItem(
                         id: UUID(),
                         inputName: input.lastPathComponent,
@@ -738,8 +781,15 @@ final class MorphModel: ObservableObject {
             } catch {
                 await MainActor.run {
                     self.isRunningUtility = false
-                    self.lastError = error.localizedDescription
-                    self.conversionMessage = "PDF page extraction could not be completed."
+                    self.utilityCancellation = nil
+                    self.isRunningUtilityCancellable = false
+                    if let morphError = error as? MorphError, case .cancelled = morphError {
+                        self.hasError = false
+                        self.conversionMessage = "PDF page extraction cancelled. The original was left unchanged.\(outputNotice.map { " " + $0 } ?? "")"
+                    } else {
+                        self.recordError(error.localizedDescription, context: "PDF page extraction")
+                        self.conversionMessage = "PDF page extraction could not be completed. Details were logged.\(outputNotice.map { " " + $0 } ?? "")"
+                    }
                 }
             }
         }
@@ -834,9 +884,14 @@ final class MorphModel: ObservableObject {
             )
             return
         }
+        guard status.canConvert else {
+            recordError(status.securityNotice ?? "Morph could not verify the installed FFmpeg version.", context: "Video compression security check")
+            conversionMessage = "Video compression is paused for an engine security update."
+            return
+        }
         guard status.supportedOutputExtensions.contains("mp4"),
               inputs.allSatisfy({ status.supportedInputExtensions.contains($0.pathExtension.lowercased()) }) else {
-            lastError = "The installed FFmpeg build cannot compress every selected video to MP4."
+            recordError("The installed FFmpeg build cannot compress every selected video to MP4.", context: "Video compression capability check")
             conversionMessage = "Video compression is unavailable for this selection."
             return
         }
@@ -847,12 +902,13 @@ final class MorphModel: ObservableObject {
         guard !isConverting, !isRunningUtility, activeEngineAction == nil else { return }
         let currentSettings = settings
         let outputDirectories = inputs.map { Self.outputDirectory(for: $0, settings: currentSettings) }
+        let outputNotice = Self.outputDirectoryNotice(for: currentSettings, inputs: inputs)
         let token = CancellationToken()
         isRunningUtility = true
         isRunningUtilityCancellable = true
         utilityCancellation = token
         conversionMessage = "Preparing video compression…"
-        lastError = nil
+        hasError = false
 
         Task.detached(priority: .userInitiated) {
             var completed: [(input: URL, output: URL)] = []
@@ -870,7 +926,8 @@ final class MorphModel: ObservableObject {
                         input,
                         options: options,
                         outputDirectory: outputDirectories[index],
-                        cancellation: token
+                        cancellation: token,
+                        stripLocationMetadata: currentSettings.stripLocationMetadata
                     )
                     let sourceSize = (try? FileManager.default.attributesOfItem(atPath: input.path)[.size] as? NSNumber)?.int64Value ?? 0
                     let outputSize = (try? FileManager.default.attributesOfItem(atPath: output.path)[.size] as? NSNumber)?.int64Value ?? 0
@@ -899,13 +956,13 @@ final class MorphModel: ObservableObject {
                 }
                 if token.isCancelled {
                     self.conversionMessage = finishedResults.isEmpty
-                        ? "Video compression cancelled. Originals were left unchanged."
-                        : "Cancelled after creating \(finishedResults.count) compressed \(finishedResults.count == 1 ? "copy" : "copies"). Completed outputs remain; originals were left unchanged."
+                        ? "Video compression cancelled. Originals were left unchanged.\(outputNotice.map { " " + $0 } ?? "")"
+                        : "Cancelled after creating \(finishedResults.count) compressed \(finishedResults.count == 1 ? "copy" : "copies"). Completed outputs remain; originals were left unchanged.\(outputNotice.map { " " + $0 } ?? "")"
                 } else if finishedFailures.isEmpty {
-                    self.conversionMessage = "Created \(finishedResults.count) compressed MP4 \(finishedResults.count == 1 ? "copy" : "copies"). \(Self.videoSizeSummary(inputBytes: originalTotalBytes, outputBytes: compressedTotalBytes))"
+                    self.conversionMessage = "Created \(finishedResults.count) compressed MP4 \(finishedResults.count == 1 ? "copy" : "copies"). \(Self.videoSizeSummary(inputBytes: originalTotalBytes, outputBytes: compressedTotalBytes))\(outputNotice.map { " " + $0 } ?? "")"
                 } else {
-                    self.lastError = finishedFailures.joined(separator: "\n\n")
-                    self.conversionMessage = "Created \(finishedResults.count) output\(finishedResults.count == 1 ? "" : "s"); \(finishedFailures.count) video\(finishedFailures.count == 1 ? "" : "s") failed. \(Self.videoSizeSummary(inputBytes: originalTotalBytes, outputBytes: compressedTotalBytes))"
+                    self.recordError(finishedFailures.joined(separator: "\n\n"), context: "Video compression")
+                    self.conversionMessage = "Some videos could not be compressed. Details were logged. \(Self.videoSizeSummary(inputBytes: originalTotalBytes, outputBytes: compressedTotalBytes))\(outputNotice.map { " " + $0 } ?? "")"
                 }
                 if currentSettings.revealOutputAfterConversion, let output = finishedResults.last?.output {
                     NSWorkspace.shared.activateFileViewerSelecting([output])
@@ -932,8 +989,8 @@ final class MorphModel: ObservableObject {
         do {
             range = try MorphFileOperations.parseVideoTrimRange(start: start, end: end)
         } catch {
-            lastError = error.localizedDescription
-            conversionMessage = "Video trimming could not be completed."
+            recordError(error.localizedDescription, context: "Video trim input")
+            conversionMessage = "Video trimming could not be prepared. Details were logged."
             return
         }
         guard let status = registry?.status(for: .ffmpeg), status.isInstalled else {
@@ -948,9 +1005,14 @@ final class MorphModel: ObservableObject {
             )
             return
         }
+        guard status.canConvert else {
+            recordError(status.securityNotice ?? "Morph could not verify the installed FFmpeg version.", context: "Video trimming security check")
+            conversionMessage = "Video trimming is paused for an engine security update."
+            return
+        }
         guard status.supportedInputExtensions.contains(input.pathExtension.lowercased()),
               status.supportedOutputExtensions.contains("mp4") else {
-            lastError = "The installed FFmpeg build cannot trim this input to MP4."
+            recordError("The installed FFmpeg build cannot trim this input to MP4.", context: "Video trimming capability check")
             conversionMessage = "Video trimming is unavailable for this format."
             return
         }
@@ -959,14 +1021,15 @@ final class MorphModel: ObservableObject {
 
     private func runVideoTrim(input: URL, range: (startSeconds: Double, durationSeconds: Double)) {
         guard !isConverting, !isRunningUtility, activeEngineAction == nil else { return }
-        let outputDirectory = Self.outputDirectory(for: input, settings: settings)
         let currentSettings = settings
+        let outputDirectory = Self.outputDirectory(for: input, settings: currentSettings)
+        let outputNotice = Self.outputDirectoryNotice(for: currentSettings, inputs: [input])
         let start = range.startSeconds
         let end = start + range.durationSeconds
         isRunningUtility = true
         isRunningUtilityCancellable = true
         conversionMessage = "Trimming video…"
-        lastError = nil
+        hasError = false
         let token = CancellationToken()
         utilityCancellation = token
 
@@ -977,13 +1040,14 @@ final class MorphModel: ObservableObject {
                     startSeconds: start,
                     endSeconds: end,
                     outputDirectory: outputDirectory,
-                    cancellation: token
+                    cancellation: token,
+                    stripLocationMetadata: currentSettings.stripLocationMetadata
                 )
                 await MainActor.run {
                     self.isRunningUtility = false
                     self.isRunningUtilityCancellable = false
                     self.utilityCancellation = nil
-                    self.conversionMessage = "Created a trimmed MP4 copy."
+                    self.conversionMessage = "Created a trimmed MP4 copy.\(outputNotice.map { " " + $0 } ?? "")"
                     self.history.insert(HistoryItem(
                         id: UUID(),
                         inputName: input.lastPathComponent,
@@ -1003,11 +1067,11 @@ final class MorphModel: ObservableObject {
                     self.isRunningUtilityCancellable = false
                     self.utilityCancellation = nil
                     if let morphError = error as? MorphError, case .cancelled = morphError {
-                        self.lastError = nil
-                        self.conversionMessage = "Video trimming cancelled. The original was left unchanged."
+                        self.hasError = false
+                        self.conversionMessage = "Video trimming cancelled. The original was left unchanged.\(outputNotice.map { " " + $0 } ?? "")"
                     } else {
-                        self.lastError = error.localizedDescription
-                        self.conversionMessage = "Video trimming could not be completed."
+                        self.recordError(error.localizedDescription, context: "Video trimming")
+                        self.conversionMessage = "Video trimming could not be completed. Details were logged.\(outputNotice.map { " " + $0 } ?? "")"
                     }
                 }
             }
@@ -1020,73 +1084,433 @@ final class MorphModel: ObservableObject {
         onSuccess: (() -> Void)? = nil,
         onCancel: (() -> Void)? = nil
     ) {
-        guard let formula = id.homebrewFormula, activeEngineAction == nil, !isConverting, !isRunningUtility else { return }
+        guard let package = id.homebrewPackageName,
+              let actionArguments = id.homebrewArguments(action: "install"),
+              activeEngineAction == nil, !isConverting, !isRunningUtility else { return }
+        guard guardEngineApprovalStorage(context: "Engine installation") else { return }
         activeEngineAction = id
-        conversionMessage = "Checking \(id.displayName) download size…"
-        Task { [weak self] in
-            let estimate = await HomebrewBottleSizeEstimator.estimate(formula: formula)
-            guard let self else { return }
-            let estimateText = estimate.map {
-                "The current \(formula) bottle is approximately \(ByteCountFormatter.string(fromByteCount: $0, countStyle: .file)) to download; required dependencies are additional."
-            }
-                ?? "A bottle size estimate is unavailable. Homebrew will resolve the formula and dependency download sizes after confirmation."
-            let reasonText = reason.map { "\($0)\n\n" } ?? ""
-            confirmEngineAction(id: id, action: "Install", message: "\(reasonText)Morph will ask Homebrew to install the ‘\(formula)’ formula and any required dependencies. Homebrew verifies package checksums. \(estimateText) No engine is downloaded until you confirm here.", cancelled: {
+        hasError = false
+        conversionMessage = "Waiting for install confirmation…"
+        let reasonText = reason.map { "\($0)\n\n" } ?? ""
+        let packageKind = id.homebrewPackageFlag == "--cask" ? "cask" : "formula"
+        confirmEngineAction(
+            id: id,
+            action: "Install",
+            message: "\(reasonText)Morph will ask Homebrew to install the ‘\(package)’ \(packageKind) and any required dependencies. Homebrew verifies package checksums and resolves the download size when the install starts. Morph does not request bottle metadata or download an engine before you confirm here.",
+            cancelled: {
                 self.finishEngineAction(id)
                 self.conversionMessage = "Install cancelled. No output was created."
                 onCancel?()
-            }) {
-                self.runHomebrew(engine: id, arguments: ["install", "--formula", formula], successMessage: "\(id.displayName) installed.", onSuccess: onSuccess)
             }
+        ) {
+            self.runHomebrew(engine: id, arguments: actionArguments, successMessage: "\(id.displayName) installed.", onSuccess: onSuccess)
         }
     }
 
     func uninstallEngine(_ id: EngineID) {
-        guard let formula = id.homebrewFormula, activeEngineAction == nil, !isConverting, !isRunningUtility else { return }
+        guard let package = id.homebrewPackageName,
+              let actionArguments = id.homebrewArguments(action: "uninstall"),
+              activeEngineAction == nil, !isConverting, !isRunningUtility else { return }
+        guard guardEngineApprovalStorage(context: "Engine uninstall") else { return }
         activeEngineAction = id
-        confirmEngineAction(id: id, action: "Uninstall", message: "Homebrew will remove the ‘\(formula)’ formula. Other formulas and shared dependencies are left in place.", cancelled: { [weak self] in
+        hasError = false
+        let packageKind = id.homebrewPackageFlag == "--cask" ? "cask" : "formula"
+        confirmEngineAction(id: id, action: "Uninstall", message: "Homebrew will remove the ‘\(package)’ \(packageKind). Other packages and shared dependencies are left in place.", cancelled: { [weak self] in
             self?.finishEngineAction(id)
         }) { [weak self] in
-            self?.runHomebrew(engine: id, arguments: ["uninstall", "--formula", formula], successMessage: "\(id.displayName) uninstalled.")
+            self?.runHomebrew(engine: id, arguments: actionArguments, successMessage: "\(id.displayName) uninstalled.")
         }
     }
 
     func checkForUpdates(_ id: EngineID) {
-        guard activeEngineAction == nil else { return }
-        guard let formula = id.homebrewFormula else { return }
-        guard let brew = ExecutableLocator.resolve(["brew"]) else {
-            lastError = "Homebrew is not installed. Install it from https://brew.sh, then try again."
+        guard activeEngineAction == nil, !isConverting, !isRunningUtility else { return }
+        guard guardEngineApprovalStorage(context: "Engine update check") else { return }
+        guard let actionArguments = id.homebrewArguments(action: "outdated") else { return }
+        guard let brew = EngineExecutableTrust.homebrewExecutable() else {
+            recordError("Homebrew executable was not found.", context: "Engine update check")
+            conversionMessage = "Homebrew is unavailable. Details were logged."
             return
         }
+        guard EngineExecutableTrust.isHomebrewApproved(brew) else {
+            requestExecutableTrustApproval(
+                displayName: "Homebrew",
+                identifier: "homebrew",
+                executables: [brew],
+                onApproved: { self.checkForUpdates(id) },
+                onCancel: { self.conversionMessage = "Homebrew review cancelled. No package action was run." }
+            )
+            return
+        }
+        guard confirmHomebrewMetadataRefresh() else {
+            conversionMessage = "Update check cancelled. Homebrew was not contacted."
+            return
+        }
+        activeEngineAction = id
+        hasError = false
+        conversionMessage = "Checking \(id.displayName) for updates…"
         Task.detached(priority: .utility) {
             do {
-                let result = try ProcessRunner.run(executable: brew, arguments: ["outdated", "--formula", formula])
-                guard result.status == 0 else {
-                    throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+                guard EngineExecutableTrust.isHomebrewApproved(brew) else {
+                    throw MorphError.processFailed("The Homebrew executable changed after approval. Review it again before use.")
                 }
-                let outdated = !(result.stdout + result.stderr).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let refresh = try ProcessRunner.run(
+                    executable: brew,
+                    arguments: EngineID.homebrewMetadataRefreshArguments,
+                    timeout: 10 * 60,
+                    environmentOverrides: HomebrewProcessEnvironment.overrides()
+                )
+                guard refresh.status == 0, !refresh.stdoutWasTruncated, !refresh.stderrWasTruncated else {
+                    let output = [refresh.stdout, refresh.stderr]
+                        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                        .joined(separator: "\n")
+                    throw MorphError.processFailed("Homebrew could not refresh package metadata (status \(refresh.status)). \(output)")
+                }
+                let result = try ProcessRunner.run(
+                    executable: brew,
+                    arguments: actionArguments,
+                    environmentOverrides: HomebrewProcessEnvironment.overrides()
+                )
+                guard !result.stdoutWasTruncated, !result.stderrWasTruncated else {
+                    throw MorphError.processFailed("Homebrew output exceeded Morph's diagnostic limit.")
+                }
+                let outdated = try id.isHomebrewPackageOutdated(
+                    exitStatus: result.status,
+                    standardOutput: result.stdout,
+                    standardError: result.stderr
+                )
                 await MainActor.run {
                     if outdated { self.updatesAvailable.insert(id) } else { self.updatesAvailable.remove(id) }
                     self.conversionMessage = outdated ? "An update is available for \(id.displayName)." : "\(id.displayName) is up to date."
-                    self.lastError = nil
+                    self.hasError = false
+                    self.finishEngineAction(id)
                 }
             } catch {
-                await MainActor.run { self.lastError = error.localizedDescription; self.conversionMessage = nil }
+                await MainActor.run {
+                    self.recordError(error.localizedDescription, context: "Update check for \(id.displayName)")
+                    self.conversionMessage = "Could not check for updates. Details were logged."
+                    self.finishEngineAction(id)
+                }
+            }
+        }
+    }
+
+    func updateAllEngines(_ managedEngines: [EngineID]) {
+        guard activeEngineAction == nil, !isConverting, !isRunningUtility, !isDiscovering else { return }
+        guard guardEngineApprovalStorage(context: "Update All") else { return }
+        var seen = Set<EngineID>()
+        let installedEngines = managedEngines.filter { id in
+            seen.insert(id).inserted && id.homebrewPackageName != nil && registry?.status(for: id)?.isInstalled == true
+        }
+        guard let actionID = installedEngines.first else {
+            conversionMessage = "No optional Morph engines are installed."
+            hasError = false
+            return
+        }
+        guard let brew = EngineExecutableTrust.homebrewExecutable() else {
+            recordError("Homebrew executable was not found.", context: "Update All")
+            conversionMessage = "Homebrew is unavailable. Details were logged."
+            return
+        }
+        guard EngineExecutableTrust.isHomebrewApproved(brew) else {
+            requestExecutableTrustApproval(
+                displayName: "Homebrew",
+                identifier: "homebrew",
+                executables: [brew],
+                onApproved: { self.updateAllEngines(managedEngines) },
+                onCancel: { self.conversionMessage = "Homebrew review cancelled. No packages were checked or changed." }
+            )
+            return
+        }
+
+        guard confirmHomebrewMetadataRefresh() else {
+            conversionMessage = "Update check cancelled. Homebrew was not contacted."
+            return
+        }
+
+        activeEngineAction = actionID
+        isCheckingAllEngineUpdates = true
+        updatesAvailable.removeAll()
+        hasError = false
+        conversionMessage = "Checking installed engines for updates…"
+
+        Task.detached(priority: .utility) {
+            var outdated: [EngineID] = []
+            var failures: [String] = []
+            do {
+                guard EngineExecutableTrust.isHomebrewApproved(brew) else {
+                    throw MorphError.processFailed("The Homebrew executable changed after approval. Review it again before use.")
+                }
+                let refresh = try ProcessRunner.run(
+                    executable: brew,
+                    arguments: EngineID.homebrewMetadataRefreshArguments,
+                    timeout: 10 * 60,
+                    environmentOverrides: HomebrewProcessEnvironment.overrides()
+                )
+                guard refresh.status == 0, !refresh.stdoutWasTruncated, !refresh.stderrWasTruncated else {
+                    let output = [refresh.stdout, refresh.stderr]
+                        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                        .joined(separator: "\n")
+                    throw MorphError.processFailed("Homebrew could not refresh package metadata (status \(refresh.status)). \(output)")
+                }
+            } catch {
+                await MainActor.run {
+                    self.isCheckingAllEngineUpdates = false
+                    self.recordError(error.localizedDescription, context: "Update All metadata refresh")
+                    self.conversionMessage = "Could not refresh Homebrew metadata. Details were logged. No engine upgrades were started."
+                    self.finishEngineAction(actionID)
+                }
+                return
+            }
+
+            for id in installedEngines {
+                guard let arguments = id.homebrewArguments(action: "outdated") else { continue }
+                do {
+                    guard EngineExecutableTrust.isHomebrewApproved(brew) else {
+                        throw MorphError.processFailed("The Homebrew executable changed after approval. Review it again before use.")
+                    }
+                    let result = try ProcessRunner.run(
+                        executable: brew,
+                        arguments: arguments,
+                        environmentOverrides: HomebrewProcessEnvironment.overrides()
+                    )
+                    guard !result.stdoutWasTruncated, !result.stderrWasTruncated else {
+                        throw MorphError.processFailed("Homebrew output exceeded Morph's diagnostic limit.")
+                    }
+                    if try id.isHomebrewPackageOutdated(
+                        exitStatus: result.status,
+                        standardOutput: result.stdout,
+                        standardError: result.stderr
+                    ) {
+                        outdated.append(id)
+                    }
+                } catch {
+                    failures.append("\(id.displayName): \(error.localizedDescription)")
+                }
+            }
+
+            let checkedOutdated = outdated
+            let checkFailures = failures
+            await MainActor.run {
+                self.isCheckingAllEngineUpdates = false
+                self.updatesAvailable = Set(checkedOutdated)
+                if checkedOutdated.isEmpty {
+                    self.finishEngineAction(actionID)
+                    if checkFailures.isEmpty {
+                        self.hasError = false
+                        self.conversionMessage = "All installed Morph engines are up to date."
+                    } else {
+                        self.recordError(checkFailures.joined(separator: "\n\n"), context: "Update All checks")
+                        self.conversionMessage = "Some engines could not be checked. Details were logged."
+                    }
+                    return
+                }
+                self.confirmUpdateAllEngines(
+                    checkedOutdated,
+                    checkFailures: checkFailures,
+                    actionID: actionID,
+                    brew: brew
+                )
             }
         }
     }
 
     func updateEngine(_ id: EngineID) {
-        guard let formula = id.homebrewFormula, activeEngineAction == nil, !isConverting, !isRunningUtility else { return }
+        guard let package = id.homebrewPackageName,
+              let actionArguments = id.homebrewArguments(action: "upgrade"),
+              activeEngineAction == nil, !isConverting, !isRunningUtility else { return }
+        guard guardEngineApprovalStorage(context: "Engine update") else { return }
         activeEngineAction = id
-        confirmEngineAction(id: id, action: "Update", message: "Homebrew will upgrade the ‘\(formula)’ formula and may download dependencies. No update starts until you confirm here.", cancelled: { [weak self] in
+        hasError = false
+        let packageKind = id.homebrewPackageFlag == "--cask" ? "cask" : "formula"
+        confirmEngineAction(id: id, action: "Update", message: "Homebrew will upgrade the ‘\(package)’ \(packageKind) and may download dependencies. No update starts until you confirm here.", cancelled: { [weak self] in
             self?.finishEngineAction(id)
+            self?.conversionMessage = "Update cancelled. No package was changed."
         }) { [weak self] in
-            self?.runHomebrew(engine: id, arguments: ["upgrade", "--formula", formula], successMessage: "\(id.displayName) updated.")
+            self?.runHomebrew(engine: id, arguments: actionArguments, successMessage: "\(id.displayName) updated.")
+        }
+    }
+
+    func approveEngineExecutable(_ id: EngineID) {
+        guard activeEngineAction == nil, !isConverting, !isRunningUtility else { return }
+        guard guardEngineApprovalStorage(context: "Engine approval") else { return }
+        let executables = EngineExecutableTrust.requiredExecutables(for: id)
+        guard !executables.isEmpty else {
+            recordError("No executable for \(id.displayName) was found to review.", context: "Engine approval")
+            conversionMessage = "The engine executable could not be found. Details were logged."
+            return
+        }
+        activeEngineAction = id
+        requestExecutableTrustApproval(
+            displayName: id.displayName,
+            identifier: id.rawValue,
+            executables: executables,
+            onApproved: {
+                self.refreshEngines { self.finishEngineAction(id) }
+            },
+            onCancel: {
+                self.finishEngineAction(id)
+                self.conversionMessage = "Executable review cancelled. Morph did not run the engine."
+            }
+        )
+    }
+
+    func revokeEngineExecutableApproval(_ id: EngineID) {
+        for executable in EngineExecutableTrust.requiredExecutables(for: id) {
+            EngineExecutableTrust.revoke(executable, identifier: id.rawValue)
+        }
+        refreshEngines()
+        conversionMessage = "Approval revoked for \(id.displayName). Morph will not run it until you review it again."
+    }
+
+    func approveHomebrewExecutable() {
+        guard guardEngineApprovalStorage(context: "Homebrew approval") else { return }
+        guard let brew = EngineExecutableTrust.homebrewExecutable() else {
+            recordError("Homebrew executable was not found.", context: "Homebrew approval")
+            conversionMessage = "Homebrew is unavailable. Details were logged."
+            return
+        }
+        requestExecutableTrustApproval(
+            displayName: "Homebrew",
+            identifier: "homebrew",
+            executables: [brew],
+            onApproved: {
+                self.homebrewExecutableApproved = true
+                self.conversionMessage = "Homebrew is approved for explicit package actions."
+            },
+            onCancel: { self.conversionMessage = "Homebrew review cancelled. No package action was run." }
+        )
+    }
+
+    func revokeHomebrewExecutableApproval() {
+        guard let brew = EngineExecutableTrust.homebrewExecutable() else { return }
+        EngineExecutableTrust.revokeHomebrew(brew)
+        homebrewExecutableApproved = false
+        conversionMessage = "Homebrew approval revoked. Morph will request review before running it again."
+    }
+
+    private func confirmUpdateAllEngines(
+        _ engines: [EngineID],
+        checkFailures: [String],
+        actionID: EngineID,
+        brew: URL
+    ) {
+        let batches = EngineID.homebrewUpgradeBatches(for: engines)
+        guard !batches.isEmpty else {
+            finishEngineAction(actionID)
+            conversionMessage = "No engine updates were found."
+            return
+        }
+
+        let packageList = engines.compactMap { id -> String? in
+            guard let package = id.homebrewPackageName else { return nil }
+            let kind = id.homebrewPackageFlag == "--cask" ? "cask" : "formula"
+            return "• \(id.displayName) — \(package) (\(kind))"
+        }.joined(separator: "\n")
+        let partialCheckNotice = checkFailures.isEmpty
+            ? ""
+            : "\n\nMorph could not check \(checkFailures.count) other engine\(checkFailures.count == 1 ? "" : "s"); those will be skipped. Details will be logged."
+
+        let alert = NSAlert()
+        alert.messageText = "Update all available Morph engines?"
+        alert.informativeText = "Updates are available for:\n\n\(packageList)\n\nHomebrew may also upgrade dependencies and outdated dependents, close an updated application, and clean up older package versions. Morph will update only the listed packages, and only after you approve here.\(partialCheckNotice)"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Update All")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn {
+            runHomebrewUpgradeBatches(batches, engines: engines, actionID: actionID, brew: brew, checkFailures: checkFailures)
+        } else {
+            finishEngineAction(actionID)
+            if !checkFailures.isEmpty {
+                recordError(checkFailures.joined(separator: "\n\n"), context: "Update All checks")
+            }
+            conversionMessage = "Update cancelled. No packages were changed."
+        }
+    }
+
+    private func confirmHomebrewMetadataRefresh() -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Refresh Homebrew package metadata?"
+        alert.informativeText = "Morph will contact Homebrew and refresh its package metadata before checking installed engines. This downloads metadata only; a separate confirmation is required before Morph upgrades any engine."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Refresh Metadata")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func runHomebrewUpgradeBatches(
+        _ batches: [[String]],
+        engines: [EngineID],
+        actionID: EngineID,
+        brew: URL,
+        checkFailures: [String]
+    ) {
+        isUpdatingAllEngines = true
+        Task.detached(priority: .utility) {
+            var updated = Set<EngineID>()
+            var failed = Set<EngineID>()
+            var failures: [String] = []
+
+            for arguments in batches {
+                guard let flag = arguments.first(where: { $0 == "--formula" || $0 == "--cask" }) else { continue }
+                let packageNames = Set(arguments.drop(while: { $0 != flag }).dropFirst())
+                let batchEngines = engines.filter {
+                    $0.homebrewPackageFlag == flag && packageNames.contains($0.homebrewPackageName ?? "")
+                }
+                await MainActor.run {
+                    self.conversionMessage = "Updating \(batchEngines.map(\.displayName).joined(separator: ", "))…"
+                }
+
+                do {
+                    guard EngineExecutableTrust.isHomebrewApproved(brew) else {
+                        throw MorphError.processFailed("The Homebrew executable changed after approval. Review it again before use.")
+                    }
+                    let result = try ProcessRunner.run(
+                        executable: brew,
+                        arguments: arguments,
+                        environmentOverrides: HomebrewProcessEnvironment.overrides()
+                    )
+                    guard result.status == 0 else {
+                        let output = [result.stdout, result.stderr]
+                            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                            .joined(separator: "\n")
+                        throw MorphError.processFailed("Homebrew exited with status \(result.status). \(output)")
+                    }
+                    updated.formUnion(batchEngines)
+                } catch {
+                    failed.formUnion(batchEngines)
+                    failures.append("\(batchEngines.map(\.displayName).joined(separator: ", ")): \(error.localizedDescription)")
+                }
+            }
+
+            let completedUpdates = updated
+            let failedUpdates = failed
+            let updateFailures = failures
+            await MainActor.run {
+                self.isUpdatingAllEngines = false
+                self.updatesAvailable = failedUpdates
+                if !updateFailures.isEmpty {
+                    self.recordError(updateFailures.joined(separator: "\n\n"), context: "Update All")
+                }
+                if !checkFailures.isEmpty {
+                    self.recordError(checkFailures.joined(separator: "\n\n"), context: "Update All checks")
+                }
+
+                if updateFailures.isEmpty {
+                    self.conversionMessage = "Updated \(completedUpdates.count) engine\(completedUpdates.count == 1 ? "" : "s")."
+                } else if completedUpdates.isEmpty {
+                    self.conversionMessage = "Engine updates could not be completed. Details were logged."
+                } else {
+                    self.conversionMessage = "Updated \(completedUpdates.count) engine\(completedUpdates.count == 1 ? "" : "s"); some updates failed. Details were logged."
+                }
+                self.refreshEngines {
+                    self.finishEngineAction(actionID)
+                }
+            }
         }
     }
 
     func chooseCustomOutputFolder() {
+        guard guardEngineApprovalStorage(context: "Custom output folder") else { return }
         let panel = NSOpenPanel()
         panel.title = "Choose Morph output folder"
         panel.prompt = "Use This Folder"
@@ -1094,8 +1518,14 @@ final class MorphModel: ObservableObject {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
-            settings.customOutputPath = url.path
-            settings.outputMode = .custom
+            do {
+                try EngineExecutableTrust.setProtectedOutputDirectory(url)
+                settings.customOutputPath = url.resolvingSymlinksInPath().standardizedFileURL.path
+                settings.outputMode = .custom
+            } catch {
+                recordError(error.localizedDescription, context: "Custom output folder approval")
+                conversionMessage = "Morph could not protect that output folder. Choose another folder."
+            }
         }
     }
 
@@ -1106,7 +1536,7 @@ final class MorphModel: ObservableObject {
     private func confirmEngineAction(id: EngineID, action: String, message: String, cancelled: @escaping () -> Void, confirmed: @escaping () -> Void) {
         let alert = NSAlert()
         alert.messageText = "\(action) \(id.displayName)?"
-        alert.informativeText = message
+        alert.informativeText = "\(message)\n\nMorph requests that Homebrew skip analytics and automatic self-updates, and passes configured proxy settings. Homebrew may also load brew.env from system, prefix and user configuration locations; those files can override Morph's settings or supply Cask options. Check your Homebrew configuration before confirming."
         alert.alertStyle = .informational
         alert.addButton(withTitle: action)
         alert.addButton(withTitle: "Cancel")
@@ -1114,26 +1544,113 @@ final class MorphModel: ObservableObject {
         else { cancelled() }
     }
 
+    private func requestExecutableTrustApproval(
+        displayName: String,
+        identifier: String,
+        executables: [URL],
+        onApproved: @escaping () -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        guard guardEngineApprovalStorage(context: "Executable approval") else {
+            onCancel()
+            return
+        }
+        Task.detached(priority: .utility) {
+            do {
+                let reviewed = try executables.map {
+                    ($0, try EngineExecutableTrust.fingerprint(for: $0), try EngineExecutableTrust.ownerSummary(for: $0))
+                }
+                await MainActor.run {
+                    let paths = reviewed.map { "• \($0.0.path)\n  Owner: \($0.2)\n  SHA-256: \($0.1)" }.joined(separator: "\n")
+                    let alert = NSAlert()
+                    alert.messageText = "Approve \(displayName) executable?"
+                    alert.informativeText = "Morph will allow this locally installed executable to run during conversions. It will be re-checked against this SHA-256 digest before use; an update or replacement needs review again.\n\n\(paths)"
+                    alert.alertStyle = .informational
+                    alert.addButton(withTitle: "Approve Executable")
+                    alert.addButton(withTitle: "Cancel")
+                    guard alert.runModal() == .alertFirstButtonReturn else {
+                        onCancel()
+                        return
+                    }
+                    Task.detached(priority: .utility) {
+                        do {
+                            for (executable, fingerprint, _) in reviewed {
+                                _ = try EngineExecutableTrust.approve(
+                                    executable,
+                                    identifier: identifier,
+                                    expectedFingerprint: fingerprint
+                                )
+                            }
+                            await MainActor.run { onApproved() }
+                        } catch {
+                            await MainActor.run {
+                                self.recordError(error.localizedDescription, context: "Executable approval for \(displayName)")
+                                self.conversionMessage = "Executable approval could not be saved. Details were logged."
+                                onCancel()
+                            }
+                        }
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.recordError(error.localizedDescription, context: "Executable review for \(displayName)")
+                    self.conversionMessage = "Morph could not verify the executable. Details were logged."
+                    onCancel()
+                }
+            }
+        }
+    }
+
     private func runHomebrew(engine id: EngineID, arguments: [String], successMessage: String, refreshAfter: Bool = true, onSuccess: (() -> Void)? = nil) {
-        guard let brew = ExecutableLocator.resolve(["brew"]) else {
+        guard EngineExecutableTrust.canStorePersistentApprovals else {
             finishEngineAction(id)
-            lastError = "Homebrew is not installed. Install it from https://brew.sh, then try again."
+            conversionMessage = EngineExecutableTrust.approvalStorageUnavailableReason
+            hasError = false
+            return
+        }
+        guard let brew = EngineExecutableTrust.homebrewExecutable() else {
+            finishEngineAction(id)
+            recordError("Homebrew executable was not found.", context: "Homebrew package action")
+            conversionMessage = "Homebrew is unavailable. Details were logged."
+            return
+        }
+        guard EngineExecutableTrust.isHomebrewApproved(brew) else {
+            requestExecutableTrustApproval(
+                displayName: "Homebrew",
+                identifier: "homebrew",
+                executables: [brew],
+                onApproved: { self.runHomebrew(engine: id, arguments: arguments, successMessage: successMessage, refreshAfter: refreshAfter, onSuccess: onSuccess) },
+                onCancel: { self.finishEngineAction(id) }
+            )
             return
         }
         conversionMessage = "Running Homebrew…"
         Task.detached(priority: .utility) {
             do {
-                let result = try ProcessRunner.run(executable: brew, arguments: arguments)
+                guard EngineExecutableTrust.isHomebrewApproved(brew) else {
+                    throw MorphError.processFailed("The Homebrew executable changed after approval. Review it again before use.")
+                }
+                let result = try ProcessRunner.run(
+                    executable: brew,
+                    arguments: arguments,
+                    environmentOverrides: HomebrewProcessEnvironment.overrides()
+                )
                 guard result.status == 0 else {
-                    throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Homebrew exited with status \(result.status)." : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+                    let output = [result.stdout, result.stderr]
+                        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                        .joined(separator: "\n")
+                    throw MorphError.processFailed("Homebrew exited with status \(result.status). \(output)")
                 }
                 await MainActor.run {
                     self.conversionMessage = successMessage
-                    if arguments.first == "install" || arguments.first == "upgrade" { self.updatesAvailable.removeAll() }
+                    self.hasError = false
+                    if arguments.first == "install" || arguments.first == "upgrade" { self.updatesAvailable.remove(id) }
                     if refreshAfter {
                         self.refreshEngines {
                             self.finishEngineAction(id)
-                            onSuccess?()
+                            if let onSuccess {
+                                self.approveInstalledEngineAndRetry(id, onApproved: onSuccess)
+                            }
                         }
                     } else {
                         self.finishEngineAction(id)
@@ -1143,11 +1660,74 @@ final class MorphModel: ObservableObject {
             } catch {
                 await MainActor.run {
                     self.finishEngineAction(id)
-                    self.lastError = error.localizedDescription
-                    self.conversionMessage = nil
+                    self.recordError(error.localizedDescription, context: "Homebrew action for \(id.displayName)")
+                    self.conversionMessage = "Homebrew could not complete this action. Details were logged."
                 }
             }
         }
+    }
+
+    private func approveInstalledEngineAndRetry(_ id: EngineID, onApproved: @escaping () -> Void) {
+        guard let status = registry?.status(for: id), status.isInstalled else {
+            conversionMessage = "The engine was installed, but Morph could not verify it. No conversion was run."
+            return
+        }
+        guard status.requiresApproval else {
+            guard status.canConvert else {
+                recordError(status.securityNotice ?? status.availabilityNotice ?? "Morph could not verify the installed engine.", context: "Post-install conversion retry")
+                conversionMessage = "The engine is installed but unavailable. Details were logged; no conversion was run."
+                return
+            }
+            onApproved()
+            return
+        }
+
+        let executables = EngineExecutableTrust.requiredExecutables(for: id)
+        guard !executables.isEmpty else {
+            recordError("The installed executable for \(id.displayName) could not be found.", context: "Post-install executable review")
+            conversionMessage = "Morph could not review the new engine. No conversion was run."
+            return
+        }
+        activeEngineAction = id
+        requestExecutableTrustApproval(
+            displayName: id.displayName,
+            identifier: id.rawValue,
+            executables: executables,
+            onApproved: {
+                self.refreshEngines {
+                    self.finishEngineAction(id)
+                    guard let refreshed = self.registry?.status(for: id), refreshed.canConvert else {
+                        self.recordError(
+                            self.registry?.status(for: id)?.securityNotice
+                                ?? self.registry?.status(for: id)?.availabilityNotice
+                                ?? "Morph could not verify the installed engine after approval.",
+                            context: "Post-install conversion retry"
+                        )
+                        self.conversionMessage = "The engine could not be enabled safely. No conversion was run."
+                        return
+                    }
+                    onApproved()
+                }
+            },
+            onCancel: {
+                self.finishEngineAction(id)
+                self.conversionMessage = "Engine approval cancelled. The engine remains installed, and no conversion was run."
+            }
+        )
+    }
+
+    @discardableResult
+    private func guardEngineApprovalStorage(context: String) -> Bool {
+        guard let reason = EngineExecutableTrust.approvalStorageUnavailableReason else { return true }
+        recordError(reason, context: context)
+        conversionMessage = reason
+        hasError = false
+        return false
+    }
+
+    private func recordError(_ detail: String, context: String) {
+        hasError = true
+        logger.error("\(context, privacy: .public): \(detail, privacy: .private)")
     }
 
     private func finishEngineAction(_ id: EngineID) {
@@ -1155,15 +1735,58 @@ final class MorphModel: ObservableObject {
     }
 
     private static func outputDirectory(for input: URL, settings: MorphSettings) -> URL {
+        let fallback = morphOutputDirectory()
+        let candidate: URL
         switch settings.outputMode {
-        case .alongsideOriginal: input.deletingLastPathComponent()
+        case .alongsideOriginal:
+            candidate = input.deletingLastPathComponent()
         case .morphFolder:
-            FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-                .appendingPathComponent("Morph Output", isDirectory: true)
+            candidate = fallback
         case .custom:
-            if let path = settings.customOutputPath { URL(fileURLWithPath: path, isDirectory: true) }
-            else { input.deletingLastPathComponent() }
+            if let path = settings.customOutputPath {
+                let directory = URL(fileURLWithPath: path, isDirectory: true)
+                candidate = EngineExecutableTrust.protectedOutputDirectoryMatches(directory) ? directory : fallback
+            } else {
+                candidate = fallback
+            }
         }
+        try? FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: true)
+        guard OutputDirectoryPolicy.canSafelyStage(in: candidate) else {
+            try? FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
+            return fallback
+        }
+        return candidate
+    }
+
+    private static func morphOutputDirectory() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("Morph Output", isDirectory: true)
+    }
+
+    private static func outputDirectoryNotice(for settings: MorphSettings, inputs: [URL]) -> String? {
+        if settings.outputMode == .custom {
+            guard let path = settings.customOutputPath,
+                  EngineExecutableTrust.protectedOutputDirectoryMatches(URL(fileURLWithPath: path, isDirectory: true)) else {
+                return "The saved custom folder could not be verified; Morph saved to Documents/Morph Output. Choose the folder again in Settings."
+            }
+        }
+        let fallbackPath = morphOutputDirectory().standardizedFileURL.path
+        let usesUnsafeDestination = inputs.contains { input in
+            let candidate: URL
+            switch settings.outputMode {
+            case .alongsideOriginal:
+                candidate = input.deletingLastPathComponent()
+            case .morphFolder:
+                candidate = morphOutputDirectory()
+            case .custom:
+                guard let path = settings.customOutputPath, !path.isEmpty else { return false }
+                candidate = URL(fileURLWithPath: path, isDirectory: true)
+            }
+            return candidate.standardizedFileURL.path != fallbackPath
+                && !OutputDirectoryPolicy.canSafelyStage(in: candidate)
+        }
+        guard usesUnsafeDestination else { return nil }
+        return "Morph could not safely use the selected output folder, so it saved to Documents/Morph Output."
     }
 
     private func detectedExtension(_ url: URL, registry: EngineRegistry) -> String {
@@ -1187,14 +1810,36 @@ final class MorphModel: ObservableObject {
     }
 
     private func loadHistory() {
-        guard let data = try? Data(contentsOf: historyURL),
-              let loaded = try? JSONDecoder().decode([HistoryItem].self, from: data) else { return }
-        history = loaded
+        if let loaded = try? ConversionHistoryStore.load(from: historyURL) {
+            history = loaded
+            persistedHistoryIDs = Set(loaded.map(\.id))
+        }
     }
 
     private func saveHistory() {
-        guard let data = try? JSONEncoder().encode(history) else { return }
-        try? data.write(to: historyURL, options: .atomic)
+        let additions = history.filter { !persistedHistoryIDs.contains($0.id) }
+        guard !additions.isEmpty else { return }
+        if let merged = try? ConversionHistoryStore.merge(additions, into: historyURL) {
+            history = merged
+            persistedHistoryIDs = Set(merged.map(\.id))
+        }
+    }
+
+    func refreshHistory() {
+        loadHistory()
+    }
+
+    func clearHistory() {
+        do {
+            try ConversionHistoryStore.clear(from: historyURL)
+            history = []
+            persistedHistoryIDs = []
+            conversionMessage = "Conversion history was cleared. Output files were not changed."
+            hasError = false
+        } catch {
+            recordError(error.localizedDescription, context: "Clear conversion history")
+            conversionMessage = "History could not be cleared. Details were logged."
+        }
     }
 }
 

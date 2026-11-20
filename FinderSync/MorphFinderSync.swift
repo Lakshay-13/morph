@@ -87,7 +87,7 @@ final class MorphFinderSync: FIFinderSync {
         do {
             try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
         } catch {
-            logger.error("Couldn't create the Finder menu coordination directory (\(error.localizedDescription, privacy: .public)).")
+            logger.error("Couldn't create the Finder menu coordination directory (\(error.localizedDescription, privacy: .private)).")
             return true
         }
 
@@ -148,43 +148,35 @@ final class MorphFinderSync: FIFinderSync {
         let helper = containingApp.appendingPathComponent("Contents/Helpers/MorphQuickConvert.app", isDirectory: true)
         guard FileManager.default.fileExists(atPath: helper.path) else { return }
 
-        let mainApp = containingApp
-        let backgroundConfiguration = NSWorkspace.OpenConfiguration()
-        backgroundConfiguration.activates = false
-        backgroundConfiguration.addsToRecentItems = false
-        backgroundConfiguration.arguments = ["--morph-background"]
+        let helperIsRunning = NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == "com.lakshaychawla.Morph.QuickConvert" && !$0.isTerminated
+        }
+        if helperIsRunning {
+            self.retryRequestDelivery(requestURL, to: helper)
+            return
+        }
 
-        NSWorkspace.shared.openApplication(at: mainApp, configuration: backgroundConfiguration) { _, backgroundError in
-            if let backgroundError {
-                self.logger.error("Morph couldn't start its hidden background host (\(backgroundError._domain, privacy: .public), code \(backgroundError._code, privacy: .public)).")
+        // Start only the windowless helper here. It starts the main app in
+        // hidden accessory mode only when the host is not already running.
+        // Reopening an existing host from Finder could restore its Dock policy.
+        let helperConfiguration = NSWorkspace.OpenConfiguration()
+        helperConfiguration.activates = false
+        helperConfiguration.addsToRecentItems = false
+        NSWorkspace.shared.openApplication(at: helper, configuration: helperConfiguration) { _, launchError in
+            if let launchError {
+                self.logger.error("Morph couldn't start its Finder helper (\(launchError._domain, privacy: .public), code \(launchError._code, privacy: .public)).")
             }
+            self.retryRequestDelivery(requestURL, to: helper)
+        }
+    }
 
-            let helperIsRunning = NSWorkspace.shared.runningApplications.contains {
-                $0.bundleIdentifier == "com.lakshaychawla.Morph.QuickConvert" && !$0.isTerminated
-            }
-            if helperIsRunning {
-                self.send(requestURL, to: helper)
-                return
-            }
-
-            // Start the helper without untrusted request data in its arguments,
-            // then send the request URL. Retry while the new process registers
-            // its Apple Event handler; the request ID makes deliveries idempotent.
-            let helperConfiguration = NSWorkspace.OpenConfiguration()
-            helperConfiguration.activates = false
-            helperConfiguration.addsToRecentItems = false
-            NSWorkspace.shared.openApplication(at: helper, configuration: helperConfiguration) { _, launchError in
-                if let launchError {
-                    self.logger.error("Morph couldn't start its Finder helper (\(launchError._domain, privacy: .public), code \(launchError._code, privacy: .public)).")
-                    return
-                }
-                self.send(requestURL, to: helper)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    self.send(requestURL, to: helper)
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                    self.send(requestURL, to: helper)
-                }
+    private func retryRequestDelivery(_ requestURL: URL, to helper: URL) {
+        // Finder can observe a newly launched helper before its Apple Event
+        // handler is installed. Retry identically in both the running and
+        // launch paths; the helper de-duplicates this request ID.
+        for delay in [0.0, 0.4, 1.2, 2.4] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.send(requestURL, to: helper)
             }
         }
     }

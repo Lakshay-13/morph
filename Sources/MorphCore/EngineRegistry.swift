@@ -1,6 +1,15 @@
+import Darwin
 import Foundation
 import ImageIO
+import Security
 import UniformTypeIdentifiers
+import os
+
+private enum EngineProbeConfiguration {
+    static let timeout: TimeInterval = 10
+    static let conversionTimeout: TimeInterval = 10
+    static let libreOfficeUnavailableNotice = "LibreOffice is installed, but Morph could not verify a conversion inside its private sandbox. Its routes are disabled; update LibreOffice and refresh engines to try again."
+}
 
 public struct EngineRegistry: Codable, Sendable {
     public static let containingAppBundleIdentifier = "com.lakshaychawla.Morph"
@@ -15,7 +24,7 @@ public struct EngineRegistry: Codable, Sendable {
     }
 
     public func status(for id: EngineID) -> EngineStatus? { statuses[id] }
-    public func isAvailable(_ id: EngineID) -> Bool { statuses[id]?.isInstalled == true }
+    public func isAvailable(_ id: EngineID) -> Bool { statuses[id]?.canConvert == true }
 
     public static func loadFinderSyncPreferencesSnapshot() -> FinderSyncPreferencesSnapshot? {
         guard let data = UserDefaults(suiteName: containingAppBundleIdentifier)?
@@ -23,23 +32,39 @@ public struct EngineRegistry: Codable, Sendable {
         return try? JSONDecoder().decode(FinderSyncPreferencesSnapshot.self, from: data)
     }
 
-    public static func discover() -> EngineRegistry {
+    public static func discover(
+        cancellation: CancellationToken? = nil,
+        forceCapabilityRefresh: Bool = false
+    ) -> EngineRegistry {
         let imageFormats = ImageCapabilities.discover()
         var statuses = nativeStatuses(imageFormats: imageFormats)
 
-        for id in [EngineID.ffmpeg, .imageMagick, .libvips, .pandoc, .poppler, .ghostscript, .sevenZip, .libreOffice] {
-            guard let executable = ExecutableLocator.resolve(id.executableNames) else {
+        for id in [EngineID.ffmpeg, .imageMagick, .pandoc, .ghostscript, .sevenZip, .libreOffice] {
+            if cancellation?.isCancelled == true { break }
+            guard let executable = ExecutableLocator.resolveEngine(id) else {
                 statuses[id] = EngineStatus(id: id)
                 continue
             }
-            let version = probeVersion(executable, engine: id)
-            let capabilities = probeCapabilities(executable, engine: id)
+            guard EngineExecutableTrust.isEngineApproved(id) else {
+                statuses[id] = EngineStatus(id: id, executableURL: executable, requiresApproval: true)
+                continue
+            }
+            let version = probeVersion(executable, engine: id, cancellation: cancellation)
+            let securityNotice = EngineSecurityPolicy.notice(for: id, version: version)
+            let capabilities = securityNotice == nil
+                ? probeCapabilities(executable, engine: id, cancellation: cancellation, forceCapabilityRefresh: forceCapabilityRefresh)
+                : (inputs: Set<String>(), outputs: Set<String>())
+            if cancellation?.isCancelled == true { break }
+            let availabilityNotice = id == .libreOffice && securityNotice == nil && capabilities.inputs.isEmpty
+                ? EngineProbeConfiguration.libreOfficeUnavailableNotice
+                : nil
             statuses[id] = EngineStatus(
                 id: id,
                 executableURL: executable,
                 version: version,
                 supportedInputExtensions: capabilities.inputs,
-                supportedOutputExtensions: capabilities.outputs
+                supportedOutputExtensions: capabilities.outputs,
+                availabilityNotice: availabilityNotice
             )
         }
 
@@ -47,7 +72,8 @@ public struct EngineRegistry: Codable, Sendable {
         return EngineRegistry(statuses: statuses, routes: routes)
     }
 
-    public static func discoverFinderSync() -> EngineRegistry {
+    public static func discoverFinderSync(cancellation: CancellationToken? = nil) -> EngineRegistry {
+        if cancellation?.isCancelled == true { return EngineRegistry(statuses: [:], routes: []) }
         let statuses = nativeStatuses(imageFormats: ImageCapabilities.discover())
             .filter { $0.key == .nativeImage || $0.key == .nativePDF || $0.key == .structuredData || $0.key == .archive }
         let routes = ConversionCatalog.buildRoutes(statuses: statuses)
@@ -75,85 +101,278 @@ public struct EngineRegistry: Codable, Sendable {
         ]
     }
 
-    private static func probeVersion(_ executable: URL, engine: EngineID) -> String? {
-        let arguments: [String]
-        switch engine {
-        case .poppler: arguments = ["-v"]
-        case .sevenZip: arguments = ["--help"]
-        default: arguments = ["--version"]
-        }
-        guard let result = try? ProcessRunner.run(executable: executable, arguments: arguments) else { return nil }
+    private static func probeVersion(_ executable: URL, engine: EngineID, cancellation: CancellationToken?) -> String? {
+        let arguments = EngineSecurityPolicy.versionArguments(for: engine)
+        guard let result = try? ProcessRunner.run(
+            executable: executable,
+            arguments: arguments,
+            cancellation: cancellation,
+            timeout: EngineProbeConfiguration.timeout,
+            restrictedSandbox: true
+        ),
+              cancellation?.isCancelled != true,
+              result.status == 0,
+              !result.stdoutWasTruncated,
+              !result.stderrWasTruncated else { return nil }
         let text = (result.stdout + "\n" + result.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
         return text.split(separator: "\n").first.map(String.init)
     }
 
-    private static func probeCapabilities(_ executable: URL, engine: EngineID) -> (inputs: Set<String>, outputs: Set<String>) {
+    private static func probeCapabilities(
+        _ executable: URL,
+        engine: EngineID,
+        cancellation: CancellationToken?,
+        forceCapabilityRefresh: Bool
+    ) -> (inputs: Set<String>, outputs: Set<String>) {
+        if cancellation?.isCancelled == true { return ([], []) }
         switch engine {
         case .ffmpeg:
-            let demuxers = outputOf(executable, ["-demuxers"])
-            let muxers = outputOf(executable, ["-muxers"])
-            let encoders = outputOf(executable, ["-encoders"])
+            let demuxers = outputOf(executable, ["-demuxers"], cancellation: cancellation)
+            let muxers = outputOf(executable, ["-muxers"], cancellation: cancellation)
+            let encoders = outputOf(executable, ["-encoders"], cancellation: cancellation)
             return (
                 MediaCapabilities.extensions(from: demuxers, output: false),
                 MediaCapabilities.extensions(from: muxers, output: true, encoders: encoders)
             )
         case .imageMagick:
-            let formats = outputOf(executable, ["-list", "format"])
+            let formats = outputOf(executable, ["-list", "format"], cancellation: cancellation)
             return ImageMagickCapabilities.extensions(from: formats)
         case .libvips:
             // libvips support is intentionally reported in the engine list only until its
             // installed foreign-load/save operations can be probed by a dedicated adapter.
             return ([], [])
         case .pandoc:
-            let inputs = outputOf(executable, ["--list-input-formats"])
-            let outputs = outputOf(executable, ["--list-output-formats"])
+            let inputs = outputOf(executable, ["--list-input-formats"], cancellation: cancellation)
+            let outputs = outputOf(executable, ["--list-output-formats"], cancellation: cancellation)
             var capabilities = PandocCapabilities.extensions(inputs: inputs, outputs: outputs)
-            if ExecutableLocator.resolve(["xelatex", "pdflatex", "lualatex", "tectonic", "wkhtmltopdf", "weasyprint"]) == nil {
+            if cancellation?.isCancelled != true,
+               ExecutableLocator.resolve(["xelatex", "pdflatex", "lualatex", "tectonic", "wkhtmltopdf", "weasyprint"]) == nil {
                 capabilities.outputs.remove("pdf")
             }
             return capabilities
-        case .poppler:
-            return (["pdf"], ["txt"])
         case .ghostscript:
             return ([], [])
         case .sevenZip:
             return (["7z", "zip"], ["7z", "zip"])
         case .libreOffice:
-            return OfficeCapabilities.probe(executable)
+            return OfficeCapabilities.probe(executable, cancellation: cancellation, forceRefresh: forceCapabilityRefresh)
         case .nativeImage, .nativePDF, .structuredData, .archive:
             return ([], [])
         }
     }
 
-    private static func outputOf(_ executable: URL, _ arguments: [String]) -> String {
-        guard let result = try? ProcessRunner.run(executable: executable, arguments: arguments), result.status == 0 else { return "" }
+    private static func outputOf(_ executable: URL, _ arguments: [String], cancellation: CancellationToken?) -> String {
+        guard cancellation?.isCancelled != true,
+              let result = try? ProcessRunner.run(
+                  executable: executable,
+                  arguments: arguments,
+                  cancellation: cancellation,
+                  timeout: EngineProbeConfiguration.timeout,
+                  restrictedSandbox: true
+              ),
+              cancellation?.isCancelled != true,
+              result.status == 0 else { return "" }
         return result.stdout
     }
 }
 
 public enum ExecutableLocator {
+    /// Fixed discovery roots for optional engines. These are search locations,
+    /// not a trust boundary; installed engines are user-managed executables.
+    public static let engineSearchPath = "/opt/homebrew/bin:/usr/local/bin:/opt/local/bin:/usr/bin:/bin"
+
+    public static func resolveSystemTool(_ name: String) -> URL? {
+        guard ["zip", "unzip", "tar"].contains(name) else { return nil }
+        let systemDirectory = URL(fileURLWithPath: "/usr/bin", isDirectory: true)
+        let candidate = systemDirectory.appendingPathComponent(name)
+        let resolved = candidate.resolvingSymlinksInPath()
+        guard resolved.deletingLastPathComponent().standardizedFileURL.path == systemDirectory.standardizedFileURL.path else { return nil }
+        var info = stat()
+        let isExecutable = resolved.path.withCString { path in
+            stat(path, &info) == 0
+                && info.st_mode & S_IFMT == S_IFREG
+                && info.st_mode & 0o111 != 0
+                && info.st_uid == 0
+                && info.st_mode & (S_IWGRP | S_IWOTH) == 0
+        }
+        return isExecutable ? resolved : nil
+    }
+
     public static func resolve(_ names: [String]) -> URL? {
-        let standardDirectories = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/opt/local/bin"]
-        let pathDirectories = (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":")
-            .map(String.init)
-        let directories = Array(NSOrderedSet(array: pathDirectories + standardDirectories)) as? [String] ?? standardDirectories
+        let directories = engineSearchPath.split(separator: ":").map(String.init)
 
         for name in names {
+            guard name.range(of: #"^[A-Za-z0-9._+-]+$"#, options: .regularExpression) != nil else { continue }
             for directory in directories {
                 let candidate = URL(fileURLWithPath: directory, isDirectory: true).appendingPathComponent(name)
-                if FileManager.default.isExecutableFile(atPath: candidate.path) { return candidate }
+                var info = stat()
+                let existsAsRegularExecutable = candidate.path.withCString { path in
+                    stat(path, &info) == 0 && info.st_mode & S_IFMT == S_IFREG && info.st_mode & 0o111 != 0
+                }
+                if existsAsRegularExecutable { return candidate.resolvingSymlinksInPath().standardizedFileURL }
             }
         }
         return nil
     }
+
+    public static func resolveEngine(_ engine: EngineID) -> URL? {
+        if engine == .libreOffice { return resolveLibreOfficeExecutable() }
+        return resolve(engine.executableNames)
+    }
+
+    private static func resolveLibreOfficeExecutable() -> URL? {
+        guard let launcher = resolve(["soffice"]),
+              let attributes = try? FileManager.default.attributesOfItem(atPath: launcher.path),
+              (attributes[.size] as? NSNumber)?.intValue ?? Int.max <= 16 * 1_024,
+              let data = try? Data(contentsOf: launcher),
+              let contents = String(data: data, encoding: .utf8) else { return nil }
+
+        // Only accept Homebrew's two-line launcher form. Execute the native
+        // Mach-O directly so the conversion sandbox never launches a shell.
+        let lines = contents.split(whereSeparator: \.isNewline)
+        guard lines.count == 2, lines[0] == "#!/bin/bash" else { return nil }
+        let command = String(lines[1])
+        let pattern = #"^exec "([^"\r\n]+/LibreOffice\.app/Contents/MacOS/soffice)"[ \t]+"\$@"$"#
+        guard let expression = try? NSRegularExpression(pattern: pattern),
+              let match = expression.firstMatch(in: command, range: NSRange(command.startIndex..., in: command)),
+              match.range.location == 0,
+              match.range.length == (command as NSString).length,
+              let range = Range(match.range(at: 1), in: command) else { return nil }
+        let declaredPath = String(command[range])
+        let candidate = URL(fileURLWithPath: declaredPath).standardizedFileURL
+        let appBundle = candidate.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard candidate.path == declaredPath,
+              candidate.path == appBundle.appendingPathComponent("Contents/MacOS/soffice").path,
+              isExpectedLibreOfficeBundlePath(appBundle.path) else { return nil }
+        let canonical = candidate.resolvingSymlinksInPath().standardizedFileURL
+        let canonicalBundle = canonical.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard isExpectedLibreOfficeBundlePath(canonicalBundle.path),
+              isMachOExecutable(canonical),
+              hasTrustedLibreOfficeSignature(at: canonicalBundle) else { return nil }
+        return canonical
+    }
+
+    private static func isExpectedLibreOfficeBundlePath(_ path: String) -> Bool {
+        if path == "/Applications/LibreOffice.app" { return true }
+        for prefix in ["/opt/homebrew/Caskroom/libreoffice/", "/usr/local/Caskroom/libreoffice/"] {
+            guard path.hasPrefix(prefix) else { continue }
+            let remainder = String(path.dropFirst(prefix.count))
+            let components = remainder.split(separator: "/", omittingEmptySubsequences: false)
+            guard components.count == 2,
+                  components[1] == "LibreOffice.app",
+                  components[0].range(of: #"^[0-9]+(?:\.[0-9]+){1,3}$"#, options: .regularExpression) != nil else { continue }
+            return true
+        }
+        return false
+    }
+
+    private static func hasTrustedLibreOfficeSignature(at bundle: URL) -> Bool {
+        guard isExpectedLibreOfficeBundlePath(bundle.path) else { return false }
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(bundle as CFURL, [], &staticCode) == errSecSuccess,
+              let staticCode else { return false }
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(
+            "identifier \"org.libreoffice.script\" and anchor apple generic and certificate leaf[subject.OU] = \"7P5S3ZLCN7\"" as CFString,
+            [],
+            &requirement
+        ) == errSecSuccess,
+              let requirement else { return false }
+        let validationFlags = SecCSFlags(
+            rawValue: kSecCSStrictValidate | kSecCSCheckNestedCode | kSecCSCheckAllArchitectures | kSecCSRestrictSymlinks
+        )
+        guard SecStaticCodeCheckValidity(staticCode, validationFlags, requirement) == errSecSuccess else { return false }
+        var signingInformation: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInformation) == errSecSuccess,
+              let signingInformation,
+              let information = signingInformation as NSDictionary as? [String: Any],
+              let teamIdentifier = information[kSecCodeInfoTeamIdentifier as String] as? String,
+              let identifier = information[kSecCodeInfoIdentifier as String] as? String else {
+            return false
+        }
+        return teamIdentifier == "7P5S3ZLCN7" && identifier == "org.libreoffice.script"
+    }
+
+    private static func isMachOExecutable(_ url: URL) -> Bool {
+        let descriptor = url.path.withCString { open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW) }
+        guard descriptor >= 0 else { return false }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG,
+              info.st_mode & 0o111 != 0,
+              info.st_mode & (S_IWGRP | S_IWOTH) == 0,
+              info.st_size >= 4 else { return false }
+        var magic = [UInt8](repeating: 0, count: 4)
+        guard read(descriptor, &magic, magic.count) == magic.count else { return false }
+        let acceptedMagic: [[UInt8]] = [
+            [0xfe, 0xed, 0xfa, 0xce], [0xce, 0xfa, 0xed, 0xfe],
+            [0xfe, 0xed, 0xfa, 0xcf], [0xcf, 0xfa, 0xed, 0xfe],
+            [0xca, 0xfe, 0xba, 0xbe], [0xbe, 0xba, 0xfe, 0xca],
+            [0xca, 0xfe, 0xba, 0xbf], [0xbf, 0xba, 0xfe, 0xca],
+        ]
+        return acceptedMagic.contains(magic)
+    }
 }
 
 private enum ImageCapabilities {
+    private static let supportedExtensions: Set<String> = [
+        "avif", "bmp", "gif", "heic", "heif", "jpeg", "jpg", "png", "tif", "tiff", "webp",
+    ]
+    private static let cachedCapabilities = probe()
+
     static func discover() -> (inputs: Set<String>, outputs: Set<String>) {
+        cachedCapabilities
+    }
+
+    private static func probe() -> (inputs: Set<String>, outputs: Set<String>) {
         let inputIDs = (CGImageSourceCopyTypeIdentifiers() as? [String]) ?? []
         let outputIDs = (CGImageDestinationCopyTypeIdentifiers() as? [String]) ?? []
-        return (extensions(for: inputIDs), extensions(for: outputIDs))
+        let readable = extensions(for: inputIDs).intersection(supportedExtensions)
+        let writable = extensions(for: outputIDs).intersection(supportedExtensions)
+        return (readable, writableExtensions(from: writable))
+    }
+
+    private static func writableExtensions(from candidates: Set<String>) -> Set<String> {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("morph-image-capability-\(UUID().uuidString)", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+        } catch {
+            return []
+        }
+        defer { try? FileManager.default.removeItem(at: directory) }
+        guard let context = CGContext(
+            data: nil,
+            width: 2,
+            height: 2,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ), let image = context.makeImage() else {
+            return []
+        }
+
+        return Set(candidates.filter { fileExtension in
+            guard let type = UTType(filenameExtension: fileExtension) else { return false }
+            let output = directory.appendingPathComponent("probe.\(fileExtension)")
+            guard let destination = CGImageDestinationCreateWithURL(output as CFURL, type.identifier as CFString, 1, nil) else {
+                return false
+            }
+            CGImageDestinationAddImage(destination, image, nil)
+            guard CGImageDestinationFinalize(destination),
+                  let source = CGImageSourceCreateWithURL(output as CFURL, nil),
+                  CGImageSourceGetCount(source) == 1,
+                  CGImageSourceCreateImageAtIndex(source, 0, nil) != nil else {
+                return false
+            }
+            return true
+        })
     }
 
     private static func extensions(for identifiers: [String]) -> Set<String> {
@@ -181,6 +400,24 @@ private enum ImageCapabilities {
     }
 }
 
+enum FFmpegInputFormat {
+    private static let demuxersByExtension: [String: String] = [
+        "mp4": "mov", "m4v": "mov", "mov": "mov", "qt": "mov",
+        "m4a": "mov", "3gp": "mov", "3g2": "mov", "mj2": "mov",
+        "mkv": "matroska", "mk3d": "matroska", "mka": "matroska", "webm": "matroska",
+        "avi": "avi", "gif": "gif", "mpeg": "mpeg", "mpg": "mpeg",
+        "asf": "asf", "wmv": "asf", "wma": "asf", "flv": "flv",
+        "mp3": "mp3", "wav": "wav", "flac": "flac", "aac": "aac,adts",
+        "ogg": "ogg", "opus": "ogg", "aiff": "aiff", "aif": "aiff", "wv": "wv",
+    ]
+
+    static var supportedExtensions: Set<String> { Set(demuxersByExtension.keys) }
+
+    static func whitelist(for fileExtension: String) -> String? {
+        demuxersByExtension[fileExtension.lowercased()]
+    }
+}
+
 private enum MediaCapabilities {
     static func extensions(from listing: String, output: Bool, encoders: String = "") -> Set<String> {
         var aliases = Set<String>()
@@ -203,6 +440,12 @@ private enum MediaCapabilities {
             "aiff": ["aiff", "aif"], "wv": ["wv"],
         ]
         for alias in aliases { extensions.formUnion(containerMap[alias] ?? []) }
+        if !output {
+            extensions.formIntersection(FFmpegInputFormat.supportedExtensions)
+            if !aliases.contains(where: { ["mov", "mp4", "m4a", "3gp", "3g2", "mj2"].contains($0) }) {
+                extensions.remove("m4a")
+            }
+        }
 
         if output {
             let encoderNames = Set(encoders.split(separator: "\n").compactMap { line -> String? in
@@ -234,7 +477,7 @@ private enum ImageMagickCapabilities {
         let aliases: [String: [String]] = [
             "JPEG": ["jpg", "jpeg"], "JPG": ["jpg", "jpeg"], "PNG": ["png"], "WEBP": ["webp"],
             "HEIC": ["heic", "heif"], "TIFF": ["tif", "tiff"], "BMP": ["bmp"], "GIF": ["gif"],
-            "AVIF": ["avif"], "ICO": ["ico"], "SVG": ["svg"], "JP2": ["jp2"],
+            "AVIF": ["avif"], "ICO": ["ico"], "JP2": ["jp2"],
         ]
         for line in listing.split(separator: "\n") {
             let columns = line.split(whereSeparator: \.isWhitespace)
@@ -261,7 +504,7 @@ private enum PandocCapabilities {
     private static let extensionMap: [String: String] = [
         "md": "markdown", "markdown": "markdown", "txt": "plain", "html": "html", "htm": "html",
         "docx": "docx", "odt": "odt", "rtf": "rtf", "epub": "epub", "pptx": "pptx",
-        "org": "org", "rst": "rst", "tex": "latex", "json": "json", "csv": "csv", "tsv": "tsv",
+        "org": "org", "rst": "rst", "tex": "latex", "tsv": "tsv",
     ]
 
     static func extensions(inputs: String, outputs: String) -> (inputs: Set<String>, outputs: Set<String>) {
@@ -277,6 +520,9 @@ private enum OfficeCapabilities {
     private static let textDocuments: Set<String> = ["doc", "docx", "odt", "rtf", "txt", "html"]
     private static let presentations: Set<String> = ["ppt", "pptx", "odp"]
     private static let spreadsheets: Set<String> = ["xls", "xlsx", "ods", "csv"]
+    private static let cacheLock = NSLock()
+    private static var probeCache: [String: (inputs: Set<String>, outputs: Set<String>)] = [:]
+    private static let logger = Logger(subsystem: EngineRegistry.containingAppBundleIdentifier, category: "engine-capability-probe")
 
     static func outputs(for input: String) -> Set<String>? {
         if textDocuments.contains(input) { return textDocuments.union(["pdf"]) }
@@ -285,15 +531,65 @@ private enum OfficeCapabilities {
         return nil
     }
 
-    static func probe(_ executable: URL) -> (inputs: Set<String>, outputs: Set<String>) {
-        guard let result = try? ProcessRunner.run(executable: executable, arguments: ["--headless", "--version"]), result.status == 0 else { return ([], []) }
+    static func probe(
+        _ executable: URL,
+        cancellation: CancellationToken?,
+        forceRefresh: Bool
+    ) -> (inputs: Set<String>, outputs: Set<String>) {
+        guard cancellation?.isCancelled != true,
+              let fingerprint = try? EngineExecutableTrust.fingerprint(for: executable) else { return ([], []) }
+        let osVersion = ProcessInfo.processInfo.operatingSystemVersion
+        let cacheKey = "\(executable.standardizedFileURL.path)|\(fingerprint)|\(osVersion.majorVersion).\(osVersion.minorVersion).\(osVersion.patchVersion)"
+
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if !forceRefresh, let cached = probeCache[cacheKey] { return cached }
+        let smokeTest = sandboxedConversionProbe(executable, cancellation: cancellation)
+        guard cancellation?.isCancelled != true else { return ([], []) }
+        guard smokeTest else {
+            probeCache[cacheKey] = ([], [])
+            return ([], [])
+        }
         let inputs = textDocuments.union(presentations).union(spreadsheets)
         let outputs = inputs.union(["pdf"])
+        probeCache[cacheKey] = (inputs, outputs)
         return (inputs, outputs)
+    }
+
+    private static func sandboxedConversionProbe(_ executable: URL, cancellation: CancellationToken?) -> Bool {
+        do {
+            let stage = try PrivateOutputStage(
+                parentDirectory: FileManager.default.temporaryDirectory,
+                primaryFileName: "morph-capability-probe.csv"
+            )
+            let input = try stage.temporaryOutputURL()
+            let output = stage.directoryURL.appendingPathComponent("morph-capability-probe.xlsx")
+            try Data("field,value\nMorph,1\n".utf8).write(to: input, options: [.atomic])
+            try LibreOfficeEngine.convert(
+                executable: executable,
+                input: input,
+                output: output,
+                cancellation: cancellation ?? CancellationToken(),
+                timeout: EngineProbeConfiguration.conversionTimeout
+            )
+            try ConversionOutputLimits.validate(output, maximumBytes: 16 * 1_024 * 1_024)
+            let handle = try FileHandle(forReadingFrom: output)
+            defer { try? handle.close() }
+            let signature = try handle.read(upToCount: 4) ?? Data()
+            guard signature.starts(with: [0x50, 0x4b]) else {
+                logger.error("LibreOffice sandbox capability check returned an invalid XLSX package.")
+                return false
+            }
+            return true
+        } catch {
+            guard cancellation?.isCancelled != true else { return false }
+            logger.error("LibreOffice sandbox capability check failed: \(error.localizedDescription, privacy: .private)")
+            return false
+        }
     }
 }
 
-private enum ConversionCatalog {
+enum ConversionCatalog {
     static let formats: [MorphFormat] = [
         MorphFormat("png", "PNG", .image), MorphFormat("jpg", "JPEG", .image), MorphFormat("jpeg", "JPEG", .image),
         MorphFormat("webp", "WebP", .image), MorphFormat("heic", "HEIC", .image), MorphFormat("heif", "HEIF", .image),
@@ -322,7 +618,7 @@ private enum ConversionCatalog {
         var result: [ConversionRoute] = []
         func add(_ source: String, _ output: String, _ engine: EngineID, _ note: String, category: FormatCategory? = nil) {
             guard let format = formats.first(where: { $0.fileExtension == output && (category == nil || $0.category == category!) }) else { return }
-            guard statuses[engine]?.isInstalled == true else { return }
+            guard statuses[engine]?.canConvert == true else { return }
             result.append(ConversionRoute(inputExtension: source, output: format, engine: engine, description: note))
         }
 
@@ -357,13 +653,14 @@ private enum ConversionCatalog {
                 let outputIsAudio = format.category == .audio
                 if outputIsAudio && !sourceCanContainAudio { continue }
                 if !outputIsAudio && !sourceIsVideo { continue }
-                guard let status = statuses[.ffmpeg], status.isInstalled else { continue }
+                guard let status = statuses[.ffmpeg], status.canConvert else { continue }
                 let outputFormat = format.fileExtension == "gif" ? MorphFormat("gif", "GIF animation", .video) : format
                 result.append(ConversionRoute(inputExtension: source, output: outputFormat, engine: .ffmpeg, description: "Convert using the installed FFmpeg build"))
             }
         }
 
         if statuses[.nativePDF]?.isInstalled == true {
+            add("pdf", "txt", .nativePDF, "Extract PDF text using Apple PDFKit")
             result.append(ConversionRoute(
                 inputExtension: "pdf",
                 output: MorphFormat("zip", "PNG images", .archive),
@@ -373,17 +670,13 @@ private enum ConversionCatalog {
         }
 
         let pandoc = statuses[.pandoc]
-        if let pandoc, pandoc.isInstalled {
+        if let pandoc, pandoc.canConvert {
             let documentFormats = formats.filter { $0.category == .document }
             for source in pandoc.supportedInputExtensions {
                 for format in documentFormats where source != format.fileExtension && pandoc.supportedOutputExtensions.contains(format.fileExtension) {
                     result.append(ConversionRoute(inputExtension: source, output: format, engine: .pandoc, description: "Convert using Pandoc"))
                 }
             }
-        }
-
-        if statuses[.poppler]?.isInstalled == true {
-            add("pdf", "txt", .poppler, "Extract PDF text using Poppler")
         }
 
         if let office = statuses[.libreOffice], office.isInstalled {
@@ -438,7 +731,7 @@ private enum ConversionCatalog {
     private static func enginePriority(_ id: EngineID) -> Int {
         switch id {
         case .nativeImage, .nativePDF, .structuredData, .archive: 0
-        case .ffmpeg, .pandoc, .poppler: 1
+        case .ffmpeg, .pandoc: 1
         case .imageMagick, .libvips, .ghostscript, .sevenZip, .libreOffice: 2
         }
     }

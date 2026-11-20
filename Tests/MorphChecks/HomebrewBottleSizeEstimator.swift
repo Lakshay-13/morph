@@ -1,12 +1,13 @@
 import Foundation
+import MorphCore
 
 /// Reads the compressed size of the Homebrew bottle that matches this Mac.
 /// GHCR requires an anonymous, pull-only bearer token for blob HEAD requests;
 /// this estimator never downloads the bottle itself.
-public enum HomebrewBottleSizeEstimator {
+enum HomebrewBottleSizeEstimator {
     private static let requestTimeout: TimeInterval = 12
 
-    public static func estimate(formula: String) async -> Int64? {
+    static func estimate(formula: String) async -> Int64? {
         guard isSafeFormula(formula),
               let apiURL = URL(string: "https://formulae.brew.sh/api/formula/\(formula).json") else { return nil }
         var apiRequest = URLRequest(url: apiURL, timeoutInterval: requestTimeout)
@@ -22,7 +23,7 @@ public enum HomebrewBottleSizeEstimator {
               let urlString = bottleInfo["url"] as? String,
               let bottleURL = URL(string: urlString),
               bottleURL.scheme == "https",
-              ["ghcr.io", "github.com", "homebrew.bintray.com"].contains(bottleURL.host?.lowercased() ?? "") else {
+              ["ghcr.io", "github.com"].contains(bottleURL.host?.lowercased() ?? "") else {
             return nil
         }
         return await bottleSize(at: bottleURL, formula: formula)

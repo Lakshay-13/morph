@@ -98,7 +98,6 @@ struct AppRootView: View {
                 }
             }
         }
-        .onOpenURL(perform: model.handleExternalURL)
     }
 
     private func openFiles() {
@@ -126,14 +125,22 @@ struct AppRootView: View {
 }
 
 @MainActor
-private func chooseFiles(for model: MorphModel) {
+private func chooseFiles(for model: MorphModel, appending: Bool = false, preserveSection: Bool = false) {
     let panel = NSOpenPanel()
     panel.title = "Choose files for Morph"
     panel.prompt = "Add Files"
     panel.canChooseFiles = true
     panel.canChooseDirectories = false
     panel.allowsMultipleSelection = true
-    if panel.runModal() == .OK { model.importFiles(panel.urls) }
+    if panel.runModal() == .OK {
+        if appending {
+            model.appendFiles(panel.urls)
+        } else if preserveSection {
+            model.replaceSelectedFiles(panel.urls)
+        } else {
+            model.importFiles(panel.urls)
+        }
+    }
 }
 
 private final class URLCollector: @unchecked Sendable {
@@ -201,6 +208,7 @@ struct OverviewView: View {
             .padding(30)
             .frame(maxWidth: 1000, alignment: .leading)
         }
+        .onAppear { model.refreshHistory() }
     }
 }
 
@@ -269,13 +277,22 @@ struct ConvertView: View {
                 }
 
                 if model.selectedFiles.isEmpty {
-                    ContentUnavailableView("No files selected", systemImage: "doc.badge.plus", description: Text("Add files here or choose a format from Finder’s Convert To menu."))
-                        .frame(minHeight: 250)
+                    VStack(spacing: 12) {
+                        ContentUnavailableView("No files selected", systemImage: "doc.badge.plus", description: Text("Choose files here, drop them into the window, or use Finder’s Convert To menu."))
+                            .frame(minHeight: 220)
+                        Button { chooseFiles(for: model) } label: {
+                            Label("Choose Files…", systemImage: "plus")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("convert.choose-files")
+                    }
                 } else {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             Text("Selected files (\(model.selectedFiles.count))").font(.headline)
                             Spacer()
+                            Button("Add Files…") { chooseFiles(for: model, appending: true) }
+                                .accessibilityIdentifier("convert.add-files")
                             Button("Clear") { model.clearSelection() }.buttonStyle(.plain).foregroundStyle(.secondary)
                         }
                         ForEach(model.selectedFiles, id: \.path) { url in
@@ -378,12 +395,8 @@ struct ConvertView: View {
                         .padding(15).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
                     }
                     if let message = model.conversionMessage, !model.isConverting {
-                        Label(message, systemImage: model.lastError == nil ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundStyle(model.lastError == nil ? Color.green : Color.orange)
-                    }
-                    if let error = model.lastError {
-                        Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
-                            .padding(13).background(.red.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+                        Label(message, systemImage: model.hasError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                            .foregroundStyle(model.hasError ? Color.orange : Color.green)
                     }
 
                     HStack {
@@ -431,47 +444,104 @@ struct ConvertView: View {
 
 struct OperationsView: View {
     @EnvironmentObject private var model: MorphModel
-    @State private var files: [URL] = []
     @State private var prefix = "Renamed"
 
     private var previewTargets: [BatchRenameTarget] {
-        (try? model.batchRenamePlan(inputs: files, prefix: prefix)) ?? []
-    }
-
-    private var planError: String? {
-        guard !files.isEmpty else { return nil }
-        do {
-            _ = try model.batchRenamePlan(inputs: files, prefix: prefix)
-            return nil
-        } catch {
-            return error.localizedDescription
-        }
+        (try? model.batchRenamePlan(inputs: model.selectedFiles, prefix: prefix)) ?? []
     }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("File operations").font(.largeTitle.bold())
-                    Text("Create renamed copies without changing the originals.")
+                    Text("Operations").font(.largeTitle.bold())
+                    Text("Resize, inspect, split, extract, and rename file copies. Tools adapt to the files you choose.")
                         .foregroundStyle(.secondary)
                 }
 
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("Batch rename copies").font(.title2.weight(.semibold))
-                            Text("Morph adds a numbered prefix and keeps each full filename, including compound extensions.")
+                            Text("Choose files").font(.title2.weight(.semibold))
+                            Text("The same selection is available in Convert. Originals stay unchanged.")
                                 .font(.callout).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button {
-                            chooseFiles()
+                            chooseFiles(for: model, appending: !model.selectedFiles.isEmpty, preserveSection: true)
                         } label: {
-                            Label("Choose Files", systemImage: "plus")
+                            Label(model.selectedFiles.isEmpty ? "Choose Files…" : "Add Files…", systemImage: "plus")
                         }
                         .buttonStyle(.borderedProminent)
                         .accessibilityIdentifier("operations.choose-files")
+                    }
+
+                    if model.selectedFiles.isEmpty {
+                        ContentUnavailableView("No files selected", systemImage: "doc.badge.plus", description: Text("Choose files to reveal the operations supported for your selection."))
+                            .frame(minHeight: 130)
+                    } else {
+                        HStack {
+                            Text("Selected files (\(model.selectedFiles.count))").font(.headline)
+                            Spacer()
+                            Button("Clear") { model.replaceSelectedFiles([]) }
+                                .buttonStyle(.plain).foregroundStyle(.secondary)
+                        }
+                        ForEach(Array(model.selectedFiles.prefix(6)), id: \.path) { url in
+                            Label(url.lastPathComponent, systemImage: "doc")
+                                .font(.callout).lineLimit(1)
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                        }
+                        if model.selectedFiles.count > 6 {
+                            Text("And \(model.selectedFiles.count - 6) more files…")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(20)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Available operations").font(.title2.weight(.semibold))
+                    if model.selectedFiles.isEmpty {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 10)], alignment: .leading, spacing: 10) {
+                            OperationFeatureCard(title: "Images", symbol: "photo", detail: "Resize image copies and inspect metadata.")
+                            OperationFeatureCard(title: "PDF", symbol: "doc.text", detail: "Merge, split, extract pages, or compress PDFs.")
+                            OperationFeatureCard(title: "Video", symbol: "film", detail: "Trim clips or compress video to MP4.")
+                            OperationFeatureCard(title: "Archives", symbol: "archivebox", detail: "Extract ZIP files and preserve originals.")
+                            OperationFeatureCard(title: "Metadata", symbol: "info.circle", detail: "Inspect files or write edited metadata to copies.")
+                            OperationFeatureCard(title: "Batch rename", symbol: "text.line.first.and.arrowtriangle.forward", detail: "Preview numbered copies before creating them.")
+                        }
+                        Text("Choose files above to enable matching tools.")
+                            .font(.callout).foregroundStyle(.secondary)
+                    } else if model.quickActions.isEmpty {
+                        ContentUnavailableView("No operations for this selection", systemImage: "slider.horizontal.3", description: Text("Try selecting an image, PDF, video, or ZIP archive."))
+                            .frame(minHeight: 100)
+                    } else {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 10)], alignment: .leading, spacing: 10) {
+                            ForEach(model.quickActions) { action in
+                                Button { model.perform(action) } label: {
+                                    Label(action.rawValue, systemImage: action.symbol)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(model.isRunningUtility || model.isConverting || model.activeEngineAction != nil)
+                            }
+                        }
+                    }
+                }
+                .padding(20)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Batch rename copies").font(.title2.weight(.semibold))
+                            Text("Add a numbered prefix while preserving each full filename and extension.")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                        Spacer()
                     }
 
                     TextField("Name prefix", text: $prefix)
@@ -479,22 +549,10 @@ struct OperationsView: View {
                         .frame(maxWidth: 320)
                         .accessibilityIdentifier("operations.rename-prefix")
 
-                    if files.isEmpty {
-                        ContentUnavailableView(
-                            "No files selected",
-                            systemImage: "text.line.first.and.arrowtriangle.forward",
-                            description: Text("Choose one or more files to preview numbered renamed copies.")
-                        )
-                        .frame(minHeight: 160)
-                    } else {
-                        HStack {
-                            Text("Files (\(files.count))").font(.headline)
-                            Spacer()
-                            Button("Clear") { files = [] }
-                                .buttonStyle(.plain).foregroundStyle(.secondary)
-                        }
-
+                    if !model.selectedFiles.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
+                            Text("Preview (\(previewTargets.count) files)")
+                                .font(.headline)
                             ForEach(Array(previewTargets.prefix(8))) { target in
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(target.outputURL.lastPathComponent)
@@ -504,18 +562,20 @@ struct OperationsView: View {
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(10)
-                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
                             }
-                            if files.count > 8 {
-                                Text("And \(files.count - 8) more…")
+                            if previewTargets.count > 8 {
+                                Text("And \(previewTargets.count - 8) more…")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            if previewTargets.isEmpty {
+                                Text("Adjust the prefix to preview safe output names.")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                         }
-                    }
-
-                    if let planError {
-                        Label(planError, systemImage: "exclamationmark.triangle.fill")
-                            .font(.callout).foregroundStyle(.orange).textSelection(.enabled)
+                    } else {
+                        Text("Choose files above to preview the output names.")
+                            .font(.callout).foregroundStyle(.secondary)
                     }
 
                     Text(outputLocationDescription)
@@ -539,13 +599,9 @@ struct OperationsView: View {
                         .padding(14)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
                     } else if let message = model.conversionMessage {
-                        Label(message, systemImage: model.lastError == nil ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                        Label(message, systemImage: model.hasError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                             .font(.callout)
-                            .foregroundStyle(model.lastError == nil ? Color.green : Color.orange)
-                    }
-
-                    if let error = model.lastError {
-                        Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                            .foregroundStyle(model.hasError ? Color.orange : Color.green)
                     }
 
                     HStack {
@@ -553,13 +609,13 @@ struct OperationsView: View {
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button {
-                            model.createRenamedCopies(inputs: files, prefix: prefix)
+                            model.createRenamedCopies(inputs: model.selectedFiles, prefix: prefix)
                         } label: {
                             Label("Create renamed copies", systemImage: "doc.on.doc")
                         }
                         .buttonStyle(.borderedProminent)
                         .accessibilityIdentifier("operations.create-renamed-copies")
-                        .disabled(previewTargets.isEmpty || model.isRunningUtility || model.isConverting || model.activeEngineAction != nil)
+                        .disabled(model.selectedFiles.isEmpty || previewTargets.isEmpty || model.isRunningUtility || model.isConverting || model.activeEngineAction != nil)
                     }
                 }
                 .padding(20)
@@ -573,26 +629,39 @@ struct OperationsView: View {
     private var outputLocationDescription: String {
         switch model.settings.outputMode {
         case .alongsideOriginal:
-            "Copies are saved beside each original file."
+            return "Copies are saved beside each original file."
         case .morphFolder:
-            "Copies are saved in Documents/Morph Output."
+            return "Copies are saved in Documents/Morph Output."
         case .custom:
             if let path = model.settings.customOutputPath {
-                "Copies are saved in \(path)."
+                let directory = URL(fileURLWithPath: path, isDirectory: true)
+                if EngineExecutableTrust.protectedOutputDirectoryMatches(directory) {
+                    return "Copies are saved in \(path)."
+                } else {
+                    return "The saved folder needs review; Morph will save beside each original until you choose it again."
+                }
             } else {
-                "No custom folder is selected; copies are saved beside each original."
+                return "No custom folder is selected; copies are saved beside each original."
             }
         }
     }
 
-    private func chooseFiles() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose files to rename"
-        panel.prompt = "Add Files"
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = true
-        if panel.runModal() == .OK { files = panel.urls }
+}
+
+private struct OperationFeatureCard: View {
+    let title: String
+    let symbol: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: symbol).font(.title3).foregroundStyle(Color.accentColor)
+            Text(title).font(.headline)
+            Text(detail).font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 100, alignment: .leading)
+        .padding(14)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 }
 
@@ -749,10 +818,20 @@ private struct FormatButton: View {
 
 struct HistoryView: View {
     @EnvironmentObject private var model: MorphModel
+    @State private var isConfirmingClear = false
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                Text("History").font(.largeTitle.bold())
+                HStack {
+                    Text("History").font(.largeTitle.bold())
+                    Spacer()
+                    if !model.history.isEmpty {
+                        Button("Clear History", systemImage: "trash", role: .destructive) {
+                            isConfirmingClear = true
+                        }
+                        .accessibilityIdentifier("history.clear")
+                    }
+                }
                 Text("Conversions run on this Mac. History stores file names and output paths locally.")
                     .foregroundStyle(.secondary)
                 if model.history.isEmpty {
@@ -766,6 +845,12 @@ struct HistoryView: View {
             }
             .padding(30)
             .frame(maxWidth: 1000, alignment: .leading)
+        }
+        .confirmationDialog("Clear conversion history?", isPresented: $isConfirmingClear, titleVisibility: .visible) {
+            Button("Clear History", role: .destructive) { model.clearHistory() }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This removes Morph’s local record of converted file names and output paths. It does not delete any files.")
         }
     }
 }
@@ -792,15 +877,54 @@ struct HistoryRow: View {
 
 struct EnginesView: View {
     @EnvironmentObject private var model: MorphModel
-    private let externalEngines: [EngineID] = [.ffmpeg, .imageMagick, .pandoc, .poppler, .ghostscript, .sevenZip, .libreOffice]
+    private let externalEngines: [EngineID] = [.ffmpeg, .imageMagick, .pandoc, .ghostscript, .sevenZip, .libreOffice]
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("Engines").font(.largeTitle.bold())
-                    Text("Morph detects local tools and only installs an engine after you confirm.")
-                        .foregroundStyle(.secondary)
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Engines").font(.largeTitle.bold())
+                        Text("Morph detects local tools and only changes an engine after you confirm.")
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button("Update All", systemImage: "arrow.triangle.2.circlepath") {
+                        model.updateAllEngines(externalEngines)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityIdentifier("engines.update-all")
+                    .disabled(!EngineExecutableTrust.canStorePersistentApprovals || model.isDiscovering || model.activeEngineAction != nil || model.isConverting || model.isRunningUtility)
+                }
+                if let trustNotice = EngineExecutableTrust.approvalStorageUnavailableReason {
+                    Label(trustNotice, systemImage: "lock.trianglebadge.exclamationmark")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(13)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 13))
+                }
+                if let brew = EngineExecutableTrust.homebrewExecutable() {
+                    HStack(spacing: 10) {
+                        Image(systemName: model.homebrewExecutableApproved ? "checkmark.shield.fill" : "exclamationmark.shield")
+                            .foregroundStyle(model.homebrewExecutableApproved ? Color.green : Color.orange)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Homebrew · \(brew.path)").font(.caption.monospaced()).lineLimit(1)
+                            Text(model.homebrewExecutableApproved
+                                 ? "Approved for package actions after confirmation"
+                                 : EngineExecutableTrust.approvalStorageUnavailableReason ?? "Review required before Morph can run Homebrew")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if !EngineExecutableTrust.canStorePersistentApprovals {
+                            Image(systemName: "lock.fill").foregroundStyle(.secondary)
+                        } else if model.homebrewExecutableApproved {
+                            Button("Revoke") { model.revokeHomebrewExecutableApproval() }.buttonStyle(.bordered)
+                        } else {
+                            Button("Review…") { model.approveHomebrewExecutable() }.buttonStyle(.borderedProminent)
+                        }
+                    }
+                    .padding(13).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 13))
                 }
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 10)], alignment: .leading, spacing: 10) {
                     EngineCard(id: .nativeImage, status: model.registry?.status(for: .nativeImage), routeCount: routeCount(.nativeImage))
@@ -814,8 +938,9 @@ struct EnginesView: View {
                     }
                 }
                 if model.isDiscovering { ProgressView("Checking installed tools…") }
+                if model.isCheckingAllEngineUpdates { ProgressView("Checking installed engines for updates…") }
+                if model.isUpdatingAllEngines, let message = model.conversionMessage { ProgressView(message) }
                 if let message = model.conversionMessage { Text(message).font(.callout).foregroundStyle(.secondary) }
-                if let error = model.lastError { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
                 HStack {
                     Text("Available routes are based on engine support detected on this Mac.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -864,7 +989,20 @@ private struct EngineRow: View {
                 }
                 Text(id.summary).font(.caption).foregroundStyle(.secondary)
                 Text(statusDescription)
-                    .font(.caption2).foregroundStyle(status?.isInstalled == true ? .green : .secondary)
+                    .font(.caption2)
+                    .foregroundStyle(status?.securityNotice != nil ? Color.orange : (status?.isInstalled == true ? Color.green : Color.secondary))
+                if let securityNotice = status?.securityNotice {
+                    Text(securityNotice)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let availabilityNotice = status?.availabilityNotice {
+                    Text(availabilityNotice)
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Text(capabilitySummary).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
             }
             Spacer()
@@ -873,15 +1011,25 @@ private struct EngineRow: View {
                     .controlSize(.small)
                     .help("Waiting for the engine action to finish")
             }
-            if status?.isInstalled == true {
-                Button("Check for updates") { model.checkForUpdates(id) }.buttonStyle(.bordered)
-                if model.updatesAvailable.contains(id) {
-                    Button("Update…") { model.updateEngine(id) }.buttonStyle(.borderedProminent)
+            if EngineExecutableTrust.canStorePersistentApprovals {
+                if status?.isInstalled == true {
+                    Button("Check for updates") { model.checkForUpdates(id) }.buttonStyle(.bordered)
+                    if status?.securityNotice != nil || model.updatesAvailable.contains(id) {
+                        Button("Update…") { model.updateEngine(id) }.buttonStyle(.borderedProminent)
+                    }
+                    Button("Uninstall") { model.uninstallEngine(id) }.buttonStyle(.bordered)
+                    if status?.requiresApproval == true {
+                        Button("Review executable…") { model.approveEngineExecutable(id) }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("engine.approve.\(id.rawValue)")
+                    } else {
+                        Button("Revoke approval") { model.revokeEngineExecutableApproval(id) }
+                            .buttonStyle(.bordered)
+                    }
+                } else if id.homebrewPackageName != nil {
+                    Button("Install…") { model.installEngine(id) }.buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("engine.install.\(id.rawValue)")
                 }
-                Button("Uninstall") { model.uninstallEngine(id) }.buttonStyle(.bordered)
-            } else if id.homebrewFormula != nil {
-                Button("Install…") { model.installEngine(id) }.buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("engine.install.\(id.rawValue)")
             }
         }
         .disabled(model.activeEngineAction != nil || model.isConverting || model.isRunningUtility)
@@ -889,6 +1037,9 @@ private struct EngineRow: View {
     }
 
     private var capabilitySummary: String {
+        if status?.requiresApproval == true { return "No conversion routes until Morph has secure approval storage." }
+        if status?.securityNotice != nil { return "Conversion routes are disabled until this engine is updated." }
+        if status?.availabilityNotice != nil { return "Conversion routes are disabled because the private sandbox check did not pass." }
         if id == .ghostscript { return "Operation: PDF compression presets" }
         let pairs = Array(Set((model.registry?.routes ?? []).filter { $0.engine == id }.map {
             ".\($0.inputExtension) → .\($0.output.fileExtension)"
@@ -898,6 +1049,9 @@ private struct EngineRow: View {
     }
 
     private var statusDescription: String {
+        if status?.requiresApproval == true { return "Installed · disabled until secure approval storage is available" }
+        if status?.securityNotice != nil { return "Installed · conversions paused for a security update" }
+        if status?.availabilityNotice != nil { return "Installed · conversion unavailable in Morph's sandbox" }
         if id == .ghostscript {
             return status?.isInstalled == true ? "Installed · PDF compression enabled" : "Not installed · enables PDF compression"
         }
@@ -920,9 +1074,10 @@ struct SettingsView: View {
                     .pickerStyle(.radioGroup)
                     if model.settings.outputMode == .custom {
                         HStack {
-                            Text(model.settings.customOutputPath ?? "No folder selected").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            Text(customOutputSummary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             Spacer()
                             Button("Choose…") { model.chooseCustomOutputFolder() }
+                                .disabled(!EngineExecutableTrust.canStorePersistentApprovals)
                         }
                     }
                 }
@@ -984,7 +1139,15 @@ struct SettingsView: View {
                         Slider(value: $model.settings.imageQuality, in: 0.3...1.0, step: 0.05)
                         Text("\(Int(model.settings.imageQuality * 100))%").monospacedDigit().frame(width: 44, alignment: .trailing)
                     }
-                    Text("Used by lossy image formats such as JPEG and WebP. Supported formats preserve metadata when the engine allows it.")
+                    Text("Used by lossy image formats such as JPEG and WebP. Non-location metadata is preserved where the format supports it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .padding(18).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15))
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Remove location metadata from copies", isOn: $model.settings.stripLocationMetadata)
+                        .accessibilityIdentifier("settings.strip-location-metadata")
+                    Text("When enabled, Morph removes embedded GPS and location tags from image, audio, and video conversions, edits, trims, and compression. Other metadata is kept where supported. This is enabled by default.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .padding(18).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15))
@@ -1015,7 +1178,7 @@ struct SettingsView: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Privacy & safety").font(.headline)
-                    Text("Files are processed locally. Morph does not upload content or replace originals. Optional engine installation and updates require a separate confirmation.")
+                    Text("Files are processed locally. Morph does not upload content or replace originals. Location metadata removal is enabled by default and can be changed above. Optional engine installation and updates require a separate confirmation.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
                 .padding(18).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 15))
@@ -1023,5 +1186,14 @@ struct SettingsView: View {
             .padding(30)
             .frame(maxWidth: 850, alignment: .leading)
         }
+    }
+
+    private var customOutputSummary: String {
+        if let reason = EngineExecutableTrust.approvalStorageUnavailableReason { return reason }
+        guard let path = model.settings.customOutputPath else { return "No folder selected" }
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        return EngineExecutableTrust.protectedOutputDirectoryMatches(directory)
+            ? path
+            : "Choose this folder again to protect the saved destination"
     }
 }

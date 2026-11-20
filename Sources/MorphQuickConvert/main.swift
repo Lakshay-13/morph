@@ -1,13 +1,18 @@
 import AppKit
 import CoreServices
+import Darwin
 import Foundation
 import MorphCore
 import os
+import Security
 import UserNotifications
 
 @main
 private enum MorphQuickConvertMain {
     static func main() {
+        if ProcessInfo.processInfo.arguments.contains("--morph-keychain-self-test") {
+            Darwin.exit(EngineExecutableTrust.verifyPersistentKeychainAccess() ? EXIT_SUCCESS : EXIT_FAILURE)
+        }
         let application = NSApplication.shared
         application.setActivationPolicy(.accessory)
         let delegate = QuickConvertAppDelegate()
@@ -22,8 +27,12 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger(subsystem: "com.lakshaychawla.Morph", category: "QuickConvert")
     private let supportDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Morph", isDirectory: true)
+    private let inputPreflightQueue = DispatchQueue(label: "com.lakshaychawla.Morph.FinderInputPreflight", qos: .userInitiated)
     private var pendingRequests: [QuickConversionRequest] = []
-    private var receivedFinderRequestIDs: Set<String> = []
+    private var inputPreflightAttempts: [String: UUID] = [:]
+    private var timedOutInputPreflightAttempts: Set<UUID> = []
+    private var finderRequestLedger = FinderRequestIDLedger()
+    private var finderRequestLedgerIsUsable = true
     private var isConverting = false
     private var cancellation: CancellationToken?
     private var statusItem: NSStatusItem?
@@ -52,6 +61,7 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        loadFinderRequestLedger()
         NSAppleEventManager.shared().setEventHandler(
             self,
             andSelector: #selector(handleGetURL(_:withReplyEvent:)),
@@ -66,8 +76,11 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func handleGetURL(_ event: NSAppleEventDescriptor, withReplyEvent _: NSAppleEventDescriptor) {
-        let senderPID = event.attributeDescriptor(forKeyword: keySenderPIDAttr)?.int32Value
-        guard let senderPID, isFinderSyncSender(pid: pid_t(senderPID)) else {
+        guard let senderTokenDescriptor = event.attributeDescriptor(forKeyword: keySenderAuditTokenAttr),
+              senderTokenDescriptor.descriptorType == typeAuditToken,
+              let senderAuditToken = senderTokenDescriptor.data as Data?,
+              senderAuditToken.count == MemoryLayout<audit_token_t>.size,
+              isFinderSyncSender(auditToken: senderAuditToken) else {
             logger.error("Rejected a Morph conversion URL from an untrusted Apple Event sender.")
             return
         }
@@ -82,17 +95,47 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         let requestCount = enqueueConversionRequests(in: [url])
-        logger.info("Accepted a conversion URL from Finder Sync and queued \(requestCount, privacy: .public) requests.")
-        startNextRequestIfReady()
+        logger.info("Started file-access checks for \(requestCount, privacy: .public) Finder conversion requests.")
     }
 
-    private func isFinderSyncSender(pid: pid_t) -> Bool {
-        guard let sender = NSRunningApplication(processIdentifier: pid),
-              sender.bundleIdentifier == "com.lakshaychawla.Morph.FinderSync",
-              let senderBundleURL = sender.bundleURL?.standardizedFileURL else {
-            return false
+    private func isFinderSyncSender(auditToken: Data) -> Bool {
+        guard let senderCode = codeIdentity(forAuditToken: auditToken),
+              let installedCode = codeIdentity(at: finderSyncExtensionURL) else { return false }
+        return senderCode.identifier == "com.lakshaychawla.Morph.FinderSync"
+            && senderCode.uniqueCodeHash == installedCode.uniqueCodeHash
+    }
+
+    private func codeIdentity(forAuditToken auditToken: Data) -> (identifier: String, uniqueCodeHash: Data)? {
+        let attributes = [kSecGuestAttributeAudit as String: auditToken] as CFDictionary
+        var processCode: SecCode?
+        guard SecCodeCopyGuestWithAttributes(nil, attributes, SecCSFlags(rawValue: 0), &processCode) == errSecSuccess,
+              let processCode,
+              SecCodeCheckValidity(processCode, SecCSFlags(rawValue: kSecCSStrictValidate), nil) == errSecSuccess else {
+            return nil
         }
-        return senderBundleURL == finderSyncExtensionURL
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(processCode, SecCSFlags(rawValue: 0), &staticCode) == errSecSuccess,
+              let staticCode else { return nil }
+        return codeIdentity(for: staticCode)
+    }
+
+    private func codeIdentity(at bundleURL: URL) -> (identifier: String, uniqueCodeHash: Data)? {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(bundleURL as CFURL, SecCSFlags(rawValue: 0), &staticCode) == errSecSuccess,
+              let staticCode,
+              SecStaticCodeCheckValidity(staticCode, SecCSFlags(rawValue: kSecCSStrictValidate), nil) == errSecSuccess else {
+            return nil
+        }
+        return codeIdentity(for: staticCode)
+    }
+
+    private func codeIdentity(for staticCode: SecStaticCode) -> (identifier: String, uniqueCodeHash: Data)? {
+        var information: CFDictionary?
+        guard SecCodeCopySigningInformation(staticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &information) == errSecSuccess,
+              let values = information as? [String: Any],
+              let identifier = values[kSecCodeInfoIdentifier as String] as? String,
+              let uniqueCodeHash = values[kSecCodeInfoUnique as String] as? Data else { return nil }
+        return (identifier, uniqueCodeHash)
     }
 
     private func conversionRequests(in urls: [URL]) -> [FinderConversionRequest] {
@@ -106,7 +149,7 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
                   let payload = try? JSONDecoder().decode(FinderConversionRequest.self, from: data),
                   (1...100).contains(payload.paths.count),
                   payload.paths.allSatisfy({ $0.hasPrefix("/") && $0.utf8.count <= 4_096 && !$0.utf8.contains(0) }),
-                  payload.requestID == nil || UUID(uuidString: payload.requestID ?? "") != nil,
+                  UUID(uuidString: payload.requestID) != nil,
                   payload.outputExtension.range(of: #"^[a-z0-9.]{1,16}$"#, options: .regularExpression) != nil else {
                 continue
             }
@@ -118,44 +161,191 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     private func enqueueConversionRequests(in urls: [URL]) -> Int {
         let requests = conversionRequests(in: urls)
-        var queuedCount = 0
+        var checkingCount = 0
         for request in requests {
-            if let requestID = request.requestID, receivedFinderRequestIDs.contains(requestID) {
-                logger.debug("Ignored duplicate Finder request \(requestID, privacy: .public).")
+            if finderRequestLedger.contains(request.requestID) {
+                logger.debug("Ignored duplicate Finder request \(request.requestID, privacy: .public).")
                 continue
             }
-            let inputs = request.paths.map { URL(fileURLWithPath: $0).standardizedFileURL }
-            var inputValidationMessage: String?
-            for input in inputs {
+            let requestID = UUID(uuidString: request.requestID)!.uuidString.lowercased()
+            guard inputPreflightAttempts[requestID] == nil,
+                  inputPreflightAttempts.count < 16 else {
+                logger.info("Deferred a Finder request because the input-access queue is full.")
+                continue
+            }
+            let attemptID = UUID()
+            inputPreflightAttempts[requestID] = attemptID
+            checkingCount += 1
+
+            inputPreflightQueue.async { [weak self] in
+                let result: Result<[URL], FinderInputPreflightError>
                 do {
-                    guard let isRegularFile = try input.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile else {
-                        inputValidationMessage = "Morph couldn't verify access to the selected file. Check Files & Folders permissions."
-                        break
-                    }
-                    guard isRegularFile else {
-                        inputValidationMessage = "Morph can convert files, not folders."
-                        break
-                    }
+                    result = .success(try FinderInputPreflight.validate(paths: request.paths))
+                } catch let error as FinderInputPreflightError {
+                    result = .failure(error)
                 } catch {
-                    logger.error("Couldn't access a Finder-selected input (\(error.localizedDescription, privacy: .public)).")
-                    inputValidationMessage = "Morph couldn't access the selected file. Check Files & Folders permissions."
-                    break
+                    result = .failure(.invalidPath)
+                }
+                DispatchQueue.main.async { [weak self] in
+                    self?.completeInputPreflight(request, requestID: requestID, attemptID: attemptID, result: result)
                 }
             }
-            if let inputValidationMessage {
-                statusMessageItem?.title = inputValidationMessage
-                statusItem?.button?.title = "!"
-                continue
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+                guard let self, self.inputPreflightAttempts[requestID] == attemptID else { return }
+                self.timedOutInputPreflightAttempts.insert(attemptID)
+                self.statusMessageItem?.title = "Waiting for macOS file access. Check Files & Folders permissions if no prompt appears."
+                self.statusItem?.button?.title = "…"
+                self.logger.info("Finder input access is still pending after the permission wait interval.")
             }
-            logger.info("Validated \(inputs.count, privacy: .public) Finder-selected paths; output .\(request.outputExtension, privacy: .public).")
-            if let requestID = request.requestID {
-                if receivedFinderRequestIDs.count >= 512 { receivedFinderRequestIDs.removeAll(keepingCapacity: true) }
-                receivedFinderRequestIDs.insert(requestID)
-            }
-            pendingRequests.append(QuickConversionRequest(inputs: inputs, outputExtension: request.outputExtension))
-            queuedCount += 1
         }
-        return queuedCount
+        if checkingCount > 0 {
+            statusMessageItem?.title = "Checking selected files. macOS may ask for Files & Folders permission."
+            statusItem?.button?.title = "…"
+        }
+        return checkingCount
+    }
+
+    private func completeInputPreflight(
+        _ request: FinderConversionRequest,
+        requestID: String,
+        attemptID: UUID,
+        result: Result<[URL], FinderInputPreflightError>
+    ) {
+        guard inputPreflightAttempts[requestID] == attemptID else { return }
+        inputPreflightAttempts.removeValue(forKey: requestID)
+        let timedOut = timedOutInputPreflightAttempts.remove(attemptID) != nil
+        guard !timedOut else {
+            updateInputPreflightStatus()
+            if inputPreflightAttempts.isEmpty, !isConverting, pendingRequests.isEmpty {
+                statusMessageItem?.title = "File access timed out. Retry the conversion from Finder."
+                statusItem?.button?.title = "!"
+            }
+            return
+        }
+
+        let inputs: [URL]
+        switch result {
+        case .success(let validatedInputs):
+            inputs = validatedInputs
+        case .failure(.symbolicLink):
+            logger.error("Rejected a symbolic-link Finder input.")
+            statusMessageItem?.title = "Morph converts regular files, not folders or symbolic links."
+            statusItem?.button?.title = "!"
+            updateInputPreflightStatus(preserveMessage: inputPreflightAttempts.isEmpty)
+            return
+        case .failure(.notRegularFile):
+            logger.error("Rejected a non-regular Finder input.")
+            statusMessageItem?.title = "Morph converts regular files, not folders or special files."
+            statusItem?.button?.title = "!"
+            updateInputPreflightStatus(preserveMessage: inputPreflightAttempts.isEmpty)
+            return
+        case .failure(.openFailed(let code)):
+            let detail = NSError(domain: NSPOSIXErrorDomain, code: Int(code)).localizedDescription
+            logger.error("Couldn't open a Finder-selected input (\(detail, privacy: .private)).")
+            statusMessageItem?.title = "Morph couldn't access the selected file. Check Files & Folders permissions."
+            statusItem?.button?.title = "!"
+            updateInputPreflightStatus(preserveMessage: inputPreflightAttempts.isEmpty)
+            return
+        case .failure(.invalidPath):
+            logger.error("Rejected an invalid Finder-selected input path.")
+            statusMessageItem?.title = "Morph couldn't verify the selected file. Try selecting it again in Finder."
+            statusItem?.button?.title = "!"
+            updateInputPreflightStatus(preserveMessage: inputPreflightAttempts.isEmpty)
+            return
+        }
+
+        logger.info("Validated \(inputs.count, privacy: .public) Finder-selected paths; output .\(request.outputExtension, privacy: .public).")
+        guard registerFinderRequestID(request.requestID) else {
+            statusMessageItem?.title = finderRequestLedgerIsUsable
+                ? "Morph couldn't save this Finder request. Check storage and permissions, then try again."
+                : "Morph couldn't read its saved Finder retry history. Remove finder-request-ids.json from Application Support/Morph, then relaunch."
+            statusItem?.button?.title = "!"
+            updateInputPreflightStatus(preserveMessage: inputPreflightAttempts.isEmpty)
+            return
+        }
+        pendingRequests.append(QuickConversionRequest(inputs: inputs, outputExtension: request.outputExtension))
+        startNextRequestIfReady()
+        updateInputPreflightStatus()
+    }
+
+    private func updateInputPreflightStatus(preserveMessage: Bool = false) {
+        guard !isConverting, pendingRequests.isEmpty, !preserveMessage else { return }
+        if inputPreflightAttempts.isEmpty {
+            statusMessageItem?.title = "Ready for Finder conversions"
+            statusItem?.button?.title = ""
+        } else if timedOutInputPreflightAttempts.isEmpty {
+            statusMessageItem?.title = "Checking selected files. macOS may ask for Files & Folders permission."
+            statusItem?.button?.title = "…"
+        }
+    }
+
+    private var finderRequestLedgerURL: URL {
+        supportDirectory.appendingPathComponent("finder-request-ids.json")
+    }
+
+    private func loadFinderRequestLedger() {
+        guard FileManager.default.fileExists(atPath: finderRequestLedgerURL.path) else { return }
+        let descriptor = finderRequestLedgerURL.path.withCString {
+            open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        }
+        guard descriptor >= 0 else {
+            finderRequestLedgerIsUsable = false
+            logger.error("Could not open the persisted Finder request ledger safely.")
+            return
+        }
+        defer { close(descriptor) }
+        var fileInfo = stat()
+        guard fstat(descriptor, &fileInfo) == 0,
+              fileInfo.st_mode & S_IFMT == S_IFREG,
+              fileInfo.st_size >= 0,
+              fileInfo.st_size <= 128 * 1024 else {
+            finderRequestLedgerIsUsable = false
+            logger.error("The persisted Finder request ledger is not a bounded regular file.")
+            return
+        }
+        var data = Data(count: Int(fileInfo.st_size))
+        var bytesRead = 0
+        while bytesRead < data.count {
+            let count = data.withUnsafeMutableBytes { bytes in
+                read(descriptor, bytes.baseAddress!.advanced(by: bytesRead), bytes.count - bytesRead)
+            }
+            if count < 0, errno == EINTR { continue }
+            guard count > 0 else {
+                finderRequestLedgerIsUsable = false
+                logger.error("The persisted Finder request ledger ended unexpectedly.")
+                return
+            }
+            bytesRead += count
+        }
+        guard let decoded = try? JSONDecoder().decode(FinderRequestIDLedger.self, from: data) else {
+            finderRequestLedgerIsUsable = false
+            logger.error("The persisted Finder request ledger is malformed.")
+            return
+        }
+        finderRequestLedger = decoded
+    }
+
+    private func registerFinderRequestID(_ identifier: String) -> Bool {
+        guard finderRequestLedgerIsUsable else { return false }
+        var updated = finderRequestLedger
+        guard updated.register(identifier) else { return false }
+        do {
+            try FileManager.default.createDirectory(
+                at: supportDirectory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            let data = try JSONEncoder().encode(updated)
+            try data.write(to: finderRequestLedgerURL, options: .atomic)
+            if chmod(finderRequestLedgerURL.path, mode_t(0o600)) != 0 {
+                logger.error("Could not restrict Finder request ledger permissions to the current user.")
+            }
+            finderRequestLedger = updated
+            return true
+        } catch {
+            logger.error("Could not persist a Finder conversion request ID (\(error.localizedDescription, privacy: .private)).")
+            return false
+        }
     }
 
     private func startNextRequestIfReady() {
@@ -172,55 +362,80 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
         ensureMainApplicationIsRunningInBackground { [weak self] in
             guard let self else { return }
             guard !token.isCancelled else {
-                self.finishConversion(results: [], failures: [], cancelled: true, total: request.inputs.count)
+                self.finishConversion(results: [], failureCount: 0, cancelled: true, total: request.inputs.count)
                 return
             }
 
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let registry = self?.conversionRegistry() ?? EngineRegistry.discoverFinderSync()
-            let available = QuickConversionCatalog.availableOutputs(for: request.inputs, registry: registry)
-            guard let format = available.first(where: { $0.fileExtension == request.outputExtension }) else {
-                DispatchQueue.main.async {
+                guard let self, !token.isCancelled else {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.finishConversion(results: [], failureCount: 0, cancelled: true, total: request.inputs.count)
+                    }
+                    return
+                }
+                let registry = self.conversionRegistry(cancellation: token)
+                guard !token.isCancelled else {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.finishConversion(results: [], failureCount: 0, cancelled: true, total: request.inputs.count)
+                    }
+                    return
+                }
+                let available = QuickConversionCatalog.availableOutputs(for: request.inputs, registry: registry)
+                guard let format = available.first(where: { $0.fileExtension == request.outputExtension }) else {
+                    DispatchQueue.main.async {
+                        self.finishConversion(
+                            results: [],
+                            failureCount: 1,
+                            cancelled: false,
+                            total: request.inputs.count
+                        )
+                    }
+                    return
+                }
+
+                let settings = self.conversionSettings()
+                let outputFallbackMessage = self.outputFallbackMessage(for: request.inputs, settings: settings)
+                let service = ConversionService(registry: registry)
+                var results: [ConversionResult] = []
+                var failureCount = 0
+
+                for (index, input) in request.inputs.enumerated() {
+                    if token.isCancelled { break }
+                    DispatchQueue.main.async { [weak self] in
+                        self?.updateProgress(index: index + 1, total: request.inputs.count, fileName: input.lastPathComponent)
+                    }
+                    do {
+                        let conversion = ConversionRequest(
+                            inputURL: input,
+                            outputFormat: format,
+                            outputDirectory: self.outputDirectory(
+                                for: input,
+                                defaultDirectory: input.deletingLastPathComponent(),
+                                settings: settings
+                            ),
+                            imageQuality: settings.imageQuality,
+                            stripLocationMetadata: settings.stripLocationMetadata
+                        )
+                        results.append(try service.convert(conversion, cancellation: token))
+                    } catch {
+                        if !token.isCancelled {
+                            failureCount += 1
+                            self.logger.error(
+                                "Conversion failed for \(input.lastPathComponent, privacy: .private): \(error.localizedDescription, privacy: .private)"
+                            )
+                        }
+                    }
+                }
+
+                DispatchQueue.main.async { [weak self] in
                     self?.finishConversion(
-                        results: [],
-                        failures: [(request.inputs.first?.lastPathComponent ?? "Selection", "This conversion is no longer available for the selected files or installed engines.")],
-                        cancelled: false,
-                        total: request.inputs.count
+                        results: results,
+                        failureCount: failureCount,
+                        cancelled: token.isCancelled,
+                        total: request.inputs.count,
+                        outputFallbackMessage: outputFallbackMessage
                     )
                 }
-                return
-            }
-
-            let settings = self?.conversionSettings() ?? QuickConversionSettings()
-            let service = ConversionService(registry: registry)
-            var results: [ConversionResult] = []
-            var failures: [(String, String)] = []
-
-            for (index, input) in request.inputs.enumerated() {
-                if token.isCancelled { break }
-                DispatchQueue.main.async {
-                    self?.updateProgress(index: index + 1, total: request.inputs.count, fileName: input.lastPathComponent)
-                }
-                do {
-                    let conversion = ConversionRequest(
-                        inputURL: input,
-                        outputFormat: format,
-                    outputDirectory: self?.outputDirectory(
-                            for: input,
-                            defaultDirectory: input.deletingLastPathComponent(),
-                            settings: settings
-                        ) ?? input.deletingLastPathComponent(),
-                        imageQuality: settings.imageQuality
-                    )
-                    results.append(try service.convert(conversion, cancellation: token))
-                } catch {
-                    if !token.isCancelled { failures.append((input.lastPathComponent, error.localizedDescription)) }
-                }
-            }
-
-            DispatchQueue.main.async {
-                self?.finishConversion(results: results, failures: failures, cancelled: token.isCancelled, total: request.inputs.count)
-            }
             }
         }
     }
@@ -240,7 +455,7 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
         configuration.arguments = ["--morph-background"]
         NSWorkspace.shared.openApplication(at: mainApplicationURL, configuration: configuration) { _, error in
             if let error {
-                self.logger.error("Couldn't keep Morph running in the background for Finder access (\(error.localizedDescription, privacy: .public)).")
+                self.logger.error("Couldn't keep Morph running in the background for Finder access (\(error.localizedDescription, privacy: .private)).")
             } else {
                 self.logger.info("Started the Morph app in hidden background mode for Finder conversion access.")
             }
@@ -248,13 +463,10 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func conversionRegistry() -> EngineRegistry {
-        if let snapshot = EngineRegistry.loadFinderSyncPreferencesSnapshot() {
-            logger.info("Using saved Finder conversion registry with \(snapshot.registry.routes.count, privacy: .public) routes.")
-            return snapshot.registry
-        }
-        logger.info("No saved Finder conversion registry; discovering native Finder routes only.")
-        return EngineRegistry.discoverFinderSync()
+    private func conversionRegistry(cancellation: CancellationToken) -> EngineRegistry {
+        // Preferences may contain stale executable URLs. Rediscover installed engines
+        // from Morph's fixed search roots immediately before a Finder conversion.
+        EngineRegistry.discover(cancellation: cancellation)
     }
 
     private func conversionSettings() -> QuickConversionSettings {
@@ -267,18 +479,53 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func outputDirectory(for input: URL, defaultDirectory: URL, settings: QuickConversionSettings) -> URL {
+        let fallback = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Morph Output", isDirectory: true)
+        let candidate: URL
         switch settings.outputMode {
         case "Morph Output folder":
-            return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("Morph Output", isDirectory: true)
+            candidate = fallback
         case "Choose a folder":
             if let path = settings.customOutputPath, !path.isEmpty {
-                return URL(fileURLWithPath: path, isDirectory: true)
+                let directory = URL(fileURLWithPath: path, isDirectory: true)
+                candidate = EngineExecutableTrust.protectedOutputDirectoryMatches(directory) ? directory : fallback
+            } else {
+                candidate = fallback
             }
-            return input.deletingLastPathComponent()
         default:
-            return defaultDirectory
+            candidate = defaultDirectory
         }
+        try? FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: true)
+        guard OutputDirectoryPolicy.canSafelyStage(in: candidate) else {
+            try? FileManager.default.createDirectory(at: fallback, withIntermediateDirectories: true)
+            return fallback
+        }
+        return candidate
+    }
+
+    private func outputFallbackMessage(for inputs: [URL], settings: QuickConversionSettings) -> String? {
+        let fallback = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Morph Output", isDirectory: true)
+        if settings.outputMode == "Choose a folder" {
+            guard let path = settings.customOutputPath, !path.isEmpty,
+                  EngineExecutableTrust.protectedOutputDirectoryMatches(URL(fileURLWithPath: path, isDirectory: true)) else {
+                return "The saved custom folder could not be verified; Morph used Documents/Morph Output for completed conversions. Choose the folder again in Settings."
+            }
+        }
+        let unsafeSelection = inputs.contains { input in
+            let directory: URL
+            switch settings.outputMode {
+            case "Morph Output folder": directory = fallback
+            case "Choose a folder":
+                guard let path = settings.customOutputPath else { return false }
+                directory = URL(fileURLWithPath: path, isDirectory: true)
+            default: directory = input.deletingLastPathComponent()
+            }
+            return directory.standardizedFileURL.path != fallback.standardizedFileURL.path
+                && !OutputDirectoryPolicy.canSafelyStage(in: directory)
+        }
+        guard unsafeSelection else { return nil }
+        return "Morph could not safely use the selected output folder, so completed conversions were saved to Documents/Morph Output."
     }
 
     private func installStatusItemIfNeeded() {
@@ -333,7 +580,7 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
         configuration.activates = true
         NSWorkspace.shared.open([url], withApplicationAt: mainApplicationURL, configuration: configuration) { _, error in
             if let error {
-                self.logger.error("Couldn't open the Morph app from the menu bar (\(error.localizedDescription, privacy: .public)).")
+                self.logger.error("Couldn't open the Morph app from the menu bar (\(error.localizedDescription, privacy: .private)).")
             }
         }
     }
@@ -352,6 +599,11 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
         cancelMenuItem?.isHidden = true
         statusMessageItem?.title = "Cancelling conversion before quitting…"
         cancellation?.cancel()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+            guard let self, self.quitRequested, self.isConverting else { return }
+            self.logger.error("A conversion did not stop within the quit grace period; terminating the Finder helper.")
+            Darwin.exit(EXIT_SUCCESS)
+        }
     }
 
     @objc private func cancelConversion(_ sender: NSMenuItem) {
@@ -360,24 +612,22 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func terminateBackgroundMainApplicationIfRunning() {
-        guard NSWorkspace.shared.runningApplications.contains(where: {
-            $0.bundleIdentifier == "com.lakshaychawla.Morph" && !$0.isTerminated
-        }), let url = URL(string: "morph://quit") else { return }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = false
-        configuration.addsToRecentItems = false
-        NSWorkspace.shared.open([url], withApplicationAt: mainApplicationURL, configuration: configuration) { _, error in
-            if let error {
-                self.logger.error("Couldn't stop Morph's background host during quit (\(error.localizedDescription, privacy: .public)).")
-            }
+        guard let application = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == "com.lakshaychawla.Morph" &&
+                !$0.isTerminated &&
+                $0.bundleURL?.standardizedFileURL == mainApplicationURL.standardizedFileURL
+        }) else { return }
+        if !application.terminate() {
+            logger.error("Couldn't request a graceful shutdown of Morph's background host.")
         }
     }
 
     private func finishConversion(
         results: [ConversionResult],
-        failures: [(String, String)],
+        failureCount: Int,
         cancelled: Bool,
-        total: Int
+        total: Int,
+        outputFallbackMessage: String? = nil
     ) {
         saveHistory(results)
         isConverting = false
@@ -386,19 +636,20 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
         let summary: String
         if cancelled {
             summary = results.isEmpty ? "Conversion cancelled" : "Cancelled after converting \(results.count) of \(total) files"
-        } else if failures.isEmpty {
+        } else if failureCount == 0 {
             summary = "Converted \(results.count) of \(total) files"
         } else if results.isEmpty {
-            summary = failures.first?.1 ?? "Conversion failed"
+            summary = "Conversion failed. See Morph's logs for details."
         } else {
-            summary = "Converted \(results.count); \(failures.count) failed"
+            summary = "Converted \(results.count); \(failureCount) failed. See Morph's logs for details."
         }
-        logger.info("Conversion finished: \(results.count, privacy: .public) succeeded, \(failures.count, privacy: .public) failed, cancelled: \(cancelled, privacy: .public).")
+        let finalSummary = outputFallbackMessage.map { "\(summary). \($0)" } ?? summary
+        logger.info("Conversion finished: \(results.count, privacy: .public) succeeded, \(failureCount, privacy: .public) failed, cancelled: \(cancelled, privacy: .public).")
 
-        statusMessageItem?.title = summary
-        statusItem?.button?.title = cancelled ? "—" : (failures.isEmpty ? "✓" : "!")
+        statusMessageItem?.title = finalSummary
+        statusItem?.button?.title = cancelled ? "—" : (failureCount == 0 ? "✓" : "!")
         cancelMenuItem?.isHidden = true
-        deliverCompletionNotification(summary: summary)
+        deliverCompletionNotification(summary: finalSummary)
         if quitRequested {
             terminateBackgroundMainApplicationIfRunning()
             NSApp.terminate(nil)
@@ -418,13 +669,15 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
     private func saveHistory(_ results: [ConversionResult]) {
         guard !results.isEmpty else { return }
         let historyURL = supportDirectory.appendingPathComponent("history.json")
-        try? FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
-        var history = (try? Data(contentsOf: historyURL)).flatMap { try? JSONDecoder().decode([QuickHistoryItem].self, from: $0) } ?? []
-        history.insert(contentsOf: results.map {
-            QuickHistoryItem(id: UUID(), inputName: $0.inputURL.lastPathComponent, outputPath: $0.outputURL.path, engineName: $0.engine.displayName, date: $0.completedAt)
-        }, at: 0)
-        history = Array(history.prefix(200))
-        if let data = try? JSONEncoder().encode(history) { try? data.write(to: historyURL, options: .atomic) }
+        let entries = results.map {
+            ConversionHistoryEntry(inputName: $0.inputURL.lastPathComponent, outputPath: $0.outputURL.path, engineName: $0.engine.displayName, date: $0.completedAt)
+        }
+        do {
+            try FileManager.default.createDirectory(at: supportDirectory, withIntermediateDirectories: true)
+            _ = try ConversionHistoryStore.merge(entries, into: historyURL)
+        } catch {
+            logger.error("Couldn't safely merge conversion history (\(error.localizedDescription, privacy: .private)).")
+        }
     }
 
     private func deliverCompletionNotification(summary: String) {
@@ -441,7 +694,7 @@ private final class QuickConvertAppDelegate: NSObject, NSApplicationDelegate {
 }
 
 private struct FinderConversionRequest: Decodable {
-    let requestID: String?
+    let requestID: String
     let paths: [String]
     let outputExtension: String
 }
@@ -455,9 +708,10 @@ private struct QuickConversionSettings: Decodable {
     var outputMode = "Beside each original"
     var customOutputPath: String?
     var imageQuality = 0.85
+    var stripLocationMetadata = true
 
     private enum CodingKeys: String, CodingKey {
-        case outputMode, customOutputPath, imageQuality
+        case outputMode, customOutputPath, imageQuality, stripLocationMetadata
     }
 
     init() {}
@@ -467,13 +721,6 @@ private struct QuickConversionSettings: Decodable {
         outputMode = try values.decodeIfPresent(String.self, forKey: .outputMode) ?? "Beside each original"
         customOutputPath = try values.decodeIfPresent(String.self, forKey: .customOutputPath)
         imageQuality = try values.decodeIfPresent(Double.self, forKey: .imageQuality) ?? 0.85
+        stripLocationMetadata = try values.decodeIfPresent(Bool.self, forKey: .stripLocationMetadata) ?? true
     }
-}
-
-private struct QuickHistoryItem: Codable {
-    let id: UUID
-    let inputName: String
-    let outputPath: String
-    let engineName: String
-    let date: Date
 }

@@ -36,7 +36,13 @@
 	<key>CFBundleShortVersionString</key>
 	<string>0.1.2</string>
 	<key>CFBundleVersion</key>
-	<string>4</string>
+	<string>9</string>
+	<key>LSFileQuarantineEnabled</key>
+	<true/>
+	<key>LSFileQuarantineExcludedPathPatterns</key>
+	<array>
+		<string>~/Library/Application Support/Morph/*</string>
+	</array>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

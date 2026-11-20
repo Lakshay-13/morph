@@ -1,3 +1,5 @@
+import CArchive
+import Darwin
 import Foundation
 import ImageIO
 import PDFKit
@@ -65,9 +67,17 @@ public enum MorphFileOperations {
         }
 
         if fileExtension == "pdf" {
-            guard let document = PDFDocument(url: input), document.pageCount > 0 else {
+            let snapshot = try PrivateInputSnapshot(
+                input: input,
+                fileExtension: fileExtension,
+                maximumBytes: NativePDFEngine.maximumPDFInputBytes,
+                cancellation: CancellationToken()
+            )
+            try NativePDFEngine.validateInput(snapshot.fileURL)
+            guard let document = PDFDocument(url: snapshot.fileURL), document.pageCount > 0 else {
                 throw MorphError.invalidInput("The selected PDF is unreadable or has no pages.")
             }
+            try NativePDFEngine.validatePageCount(document.pageCount)
             entries.append(FileMetadataEntry(label: "Pages", value: String(document.pageCount)))
             let attributes = document.documentAttributes ?? [:]
             let fields: [(PDFDocumentAttribute, String)] = [
@@ -88,7 +98,14 @@ public enum MorphFileOperations {
             return entries
         }
 
-        guard let source = CGImageSourceCreateWithURL(input as CFURL, nil),
+        let snapshot = try PrivateInputSnapshot(
+            input: input,
+            fileExtension: fileExtension,
+            maximumBytes: NativeImageEngine.maximumInputBytes,
+            cancellation: CancellationToken()
+        )
+        try NativeImageEngine.validateInput(snapshot.fileURL)
+        guard let source = CGImageSourceCreateWithURL(snapshot.fileURL as CFURL, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
             throw MorphError.invalidInput("macOS could not read metadata for this image.")
         }
@@ -132,7 +149,8 @@ public enum MorphFileOperations {
     public static func writeMetadataCopy(
         _ input: URL,
         edits: FileMetadataEdits,
-        outputDirectory: URL? = nil
+        outputDirectory: URL? = nil,
+        stripLocationMetadata: Bool = true
     ) throws -> URL {
         guard edits.hasChanges else {
             throw MorphError.invalidInput("Enter at least one metadata value to change.")
@@ -159,17 +177,22 @@ public enum MorphFileOperations {
             extension: fileExtension,
             directory: directory
         )
-        let temporary = temporaryFile(for: output)
-        defer { try? FileManager.default.removeItem(at: temporary) }
+        let transaction = try PrivateOutputTransaction(outputURL: output)
+        let temporary = transaction.temporaryOutputURL
 
         if fileExtension == "pdf" {
             try writePDFMetadataCopy(input, edits: edits, temporary: temporary)
         } else {
-            try writeImageMetadataCopy(input, edits: edits, temporary: temporary, expectedExtension: fileExtension)
+            try writeImageMetadataCopy(
+                input,
+                edits: edits,
+                temporary: temporary,
+                expectedExtension: fileExtension,
+                stripLocationMetadata: stripLocationMetadata
+            )
         }
 
-        try commit(temporary, to: output)
-        return output
+        return try transaction.publishUnique()
     }
 
     private static func validateMetadataEdits(_ edits: FileMetadataEdits) throws {
@@ -189,9 +212,17 @@ public enum MorphFileOperations {
     }
 
     private static func writePDFMetadataCopy(_ input: URL, edits: FileMetadataEdits, temporary: URL) throws {
-        guard let source = PDFDocument(url: input), source.pageCount > 0 else {
+        let snapshot = try PrivateInputSnapshot(
+            input: input,
+            fileExtension: "pdf",
+            maximumBytes: NativePDFEngine.maximumPDFInputBytes,
+            cancellation: CancellationToken()
+        )
+        try NativePDFEngine.validateInput(snapshot.fileURL)
+        guard let source = PDFDocument(url: snapshot.fileURL), source.pageCount > 0 else {
             throw MorphError.invalidInput("The selected PDF is unreadable or has no pages.")
         }
+        try NativePDFEngine.validatePageCount(source.pageCount)
         let pageCount = source.pageCount
         var attributes = source.documentAttributes ?? [:]
         if let title = edits.title { attributes[PDFDocumentAttribute.titleAttribute] = title }
@@ -201,6 +232,7 @@ public enum MorphFileOperations {
         source.documentAttributes = attributes
 
         guard source.write(to: temporary),
+              NativePDFEngine.hasPDFHeader(temporary),
               let edited = PDFDocument(url: temporary), edited.pageCount == pageCount else {
             throw MorphError.invalidOutput("macOS could not write a valid PDF metadata copy.")
         }
@@ -226,42 +258,53 @@ public enum MorphFileOperations {
         _ input: URL,
         edits: FileMetadataEdits,
         temporary: URL,
-        expectedExtension: String
+        expectedExtension: String,
+        stripLocationMetadata: Bool
     ) throws {
-        guard let source = CGImageSourceCreateWithURL(input as CFURL, nil),
-              let sourceType = CGImageSourceGetType(source),
-              let sourceProperties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else {
-            throw MorphError.invalidInput("macOS could not read this image's metadata.")
-        }
+        let snapshot = try PrivateInputSnapshot(
+            input: input,
+            fileExtension: expectedExtension,
+            maximumBytes: NativeImageEngine.maximumInputBytes,
+            cancellation: CancellationToken()
+        )
+        try NativeImageEngine.validateInput(snapshot.fileURL)
         let expectedType = ["jpg", "jpeg"].contains(expectedExtension) ? UTType.jpeg.identifier : UTType.tiff.identifier
-        guard (sourceType as String) == expectedType else {
+        guard let source = CGImageSourceCreateWithURL(snapshot.fileURL as CFURL, nil),
+              let sourceType = CGImageSourceGetType(source),
+              (sourceType as String) == expectedType else {
             throw MorphError.invalidInput("The file contents do not match its JPEG or TIFF filename extension.")
+        }
+        guard CGImageSourceCopyPropertiesAtIndex(source, 0, nil) != nil else {
+            throw MorphError.invalidInput("macOS could not read this image's metadata.")
         }
         let imageCount = CGImageSourceGetCount(source)
         guard imageCount > 0 else {
             throw MorphError.invalidInput("The selected image contains no readable frames.")
         }
 
-        var iptc = sourceProperties[kCGImagePropertyIPTCDictionary] as? [CFString: Any] ?? [:]
-        if let title = edits.title { iptc[kCGImagePropertyIPTCObjectName] = title }
-        if let subject = edits.subject { iptc[kCGImagePropertyIPTCCaptionAbstract] = subject }
-        if let keywords = edits.keywords { iptc[kCGImagePropertyIPTCKeywords] = keywords }
-        var properties: [CFString: Any] = [:]
-        if edits.title != nil || edits.subject != nil || edits.keywords != nil {
-            properties[kCGImagePropertyIPTCDictionary] = iptc
-        }
-
-        let destinationOptions = [kCGImageDestinationMergeMetadata: true] as CFDictionary
         guard let destination = CGImageDestinationCreateWithURL(
             temporary as CFURL,
             sourceType,
             imageCount,
-            destinationOptions
+            nil
         ) else {
             throw MorphError.invalidOutput("macOS could not create an image metadata copy.")
         }
         for index in 0..<imageCount {
-            CGImageDestinationAddImageFromSource(destination, source, index, properties as CFDictionary)
+            guard let image = CGImageSourceCreateImageAtIndex(source, index, nil) else {
+                throw MorphError.invalidInput("macOS could not decode image frame \(index + 1) while editing metadata.")
+            }
+            let sourceProperties = CGImageSourceCopyPropertiesAtIndex(source, index, nil) as? [CFString: Any] ?? [:]
+            var properties = NativeImageEngine.properties(
+                preservingLocationMetadata: !stripLocationMetadata,
+                from: sourceProperties
+            )
+            var iptc = properties[kCGImagePropertyIPTCDictionary] as? [CFString: Any] ?? [:]
+            if let title = edits.title { iptc[kCGImagePropertyIPTCObjectName] = title }
+            if let subject = edits.subject { iptc[kCGImagePropertyIPTCCaptionAbstract] = subject }
+            if let keywords = edits.keywords { iptc[kCGImagePropertyIPTCKeywords] = keywords }
+            properties[kCGImagePropertyIPTCDictionary] = iptc
+            CGImageDestinationAddImage(destination, image, properties as CFDictionary)
         }
         guard CGImageDestinationFinalize(destination),
               let edited = CGImageSourceCreateWithURL(temporary as CFURL, nil),
@@ -311,12 +354,20 @@ public enum MorphFileOperations {
     @discardableResult
     public static func resizeImage(_ input: URL, scale: Double, outputDirectory: URL? = nil, quality: Double = 0.85) throws -> URL {
         guard (0.05...1.0).contains(scale) else { throw MorphError.invalidInput("Resize scale must be between 5% and 100%.") }
-        guard let source = CGImageSourceCreateWithURL(input as CFURL, nil),
+        let snapshot = try PrivateInputSnapshot(
+            input: input,
+            fileExtension: input.pathExtension.lowercased(),
+            maximumBytes: NativeImageEngine.maximumInputBytes,
+            cancellation: CancellationToken()
+        )
+        try NativeImageEngine.validateInput(snapshot.fileURL)
+        guard let source = CGImageSourceCreateWithURL(snapshot.fileURL as CFURL, nil),
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
               let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue else {
             throw MorphError.invalidInput("macOS could not read the image dimensions.")
         }
+        try NativeImageEngine.validateSourceFrames(source)
 
         let maxDimension = max(1, Int((Double(max(width, height)) * scale).rounded()))
         let options: [CFString: Any] = [
@@ -332,16 +383,15 @@ public enum MorphFileOperations {
         let directory = outputDirectory ?? input.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let output = uniqueURL(baseName: input.deletingPathExtension().lastPathComponent + "-resized", extension: "jpg", directory: directory)
-        let temporary = temporaryFile(for: output)
-        defer { try? FileManager.default.removeItem(at: temporary) }
+        let transaction = try PrivateOutputTransaction(outputURL: output)
+        let temporary = transaction.temporaryOutputURL
         guard let type = UTType(filenameExtension: "jpg"),
               let destination = CGImageDestinationCreateWithURL(temporary as CFURL, type.identifier as CFString, 1, nil) else {
             throw MorphError.invalidOutput("macOS could not create a JPEG output.")
         }
         CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: min(max(quality, 0.1), 1.0)] as CFDictionary)
         guard CGImageDestinationFinalize(destination) else { throw MorphError.invalidOutput("macOS could not finish resizing the image.") }
-        try commit(temporary, to: output)
-        return output
+        return try transaction.publishUnique()
     }
 
     public static func planBatchRenamedCopies(
@@ -398,6 +448,14 @@ public enum MorphFileOperations {
         _ target: BatchRenameTarget,
         cancellation: CancellationToken? = nil
     ) throws -> URL {
+        try createRenamedCopy(target, cancellation: cancellation, beforePublication: nil)
+    }
+
+    static func createRenamedCopy(
+        _ target: BatchRenameTarget,
+        cancellation: CancellationToken?,
+        beforePublication: (() throws -> Void)?
+    ) throws -> URL {
         guard cancellation?.isCancelled != true else { throw MorphError.cancelled }
         try validateRenamableFile(target.inputURL)
         guard target.outputURL.isFileURL,
@@ -417,8 +475,9 @@ public enum MorphFileOperations {
             throw MorphError.processFailed("‘\(target.outputURL.lastPathComponent)’ already exists. Review the preview and try again.")
         }
 
-        let staging = directory.appendingPathComponent(".morph-rename-\(UUID().uuidString).partial")
-        defer { try? manager.removeItem(at: staging) }
+        let stagedName = "renamed-copy.partial"
+        let transaction = try PrivateOutputTransaction(outputURL: target.outputURL, temporaryFileName: stagedName)
+        let staging = transaction.temporaryOutputURL
         do {
             try manager.copyItem(at: target.inputURL, to: staging)
         } catch {
@@ -430,24 +489,35 @@ public enum MorphFileOperations {
         guard sourceSize == stagedSize else {
             throw MorphError.invalidOutput("The renamed copy did not match the source file size.")
         }
-        try commit(staging, to: target.outputURL)
+        try beforePublication?()
+        try transaction.publish(cancellation: cancellation)
         return target.outputURL
     }
 
     @discardableResult
     public static func mergePDFs(_ inputs: [URL], outputDirectory: URL? = nil) throws -> URL {
         guard inputs.count >= 2 else { throw MorphError.invalidInput("Choose at least two PDF files to merge.") }
-        let documents = try inputs.map { url -> PDFDocument in
-            guard url.pathExtension.lowercased() == "pdf", let document = PDFDocument(url: url), document.pageCount > 0 else {
+        guard inputs.count <= NativePDFEngine.maximumPageCount else {
+            throw MorphError.invalidInput("PDF merges are limited to 1,000 input files.")
+        }
+        let snapshots = try snapshotPDFMergeInputs(inputs)
+        let documents = try zip(inputs, snapshots).map { pair -> PDFDocument in
+            let (url, snapshot) = pair
+            guard url.pathExtension.lowercased() == "pdf",
+                  let document = PDFDocument(url: snapshot.fileURL), document.pageCount > 0 else {
                 throw MorphError.invalidInput("‘\(url.lastPathComponent)’ is not a readable PDF.")
             }
+            try NativePDFEngine.validatePageCount(document.pageCount)
             return document
+        }
+        guard documents.reduce(0, { $0 + $1.pageCount }) <= NativePDFEngine.maximumPageCount else {
+            throw MorphError.invalidInput("PDF merges are limited to 1,000 pages total.")
         }
         let directory = outputDirectory ?? inputs[0].deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let output = uniqueURL(baseName: "Merged PDF", extension: "pdf", directory: directory)
-        let temporary = temporaryFile(for: output)
-        defer { try? FileManager.default.removeItem(at: temporary) }
+        let transaction = try PrivateOutputTransaction(outputURL: output)
+        let temporary = transaction.temporaryOutputURL
         let merged = PDFDocument()
         for document in documents {
             for index in 0..<document.pageCount {
@@ -457,70 +527,155 @@ public enum MorphFileOperations {
                 merged.insert(copy, at: merged.pageCount)
             }
         }
-        guard merged.pageCount > 0, merged.write(to: temporary), PDFDocument(url: temporary)?.pageCount == merged.pageCount else {
+        guard merged.pageCount > 0,
+              merged.write(to: temporary),
+              NativePDFEngine.hasPDFHeader(temporary) else {
             throw MorphError.invalidOutput("PDFKit could not write and verify the merged PDF.")
         }
-        try commit(temporary, to: output)
-        return output
+        try ConversionOutputLimits.validate(temporary, maximumBytes: NativePDFEngine.maximumGeneratedBytes)
+        guard PDFDocument(url: temporary)?.pageCount == merged.pageCount else {
+            throw MorphError.invalidOutput("PDFKit could not verify every page in the merged PDF.")
+        }
+        return try transaction.publishUnique()
     }
 
-    public static func splitPDF(_ input: URL, outputDirectory: URL? = nil) throws -> [URL] {
-        guard let document = PDFDocument(url: input), document.pageCount > 0 else {
+    public static func splitPDF(
+        _ input: URL,
+        outputDirectory: URL? = nil,
+        cancellation: CancellationToken? = nil
+    ) throws -> [URL] {
+        try splitPDF(
+            input,
+            outputDirectory: outputDirectory,
+            cancellation: cancellation,
+            beforePageProcessing: nil
+        )
+    }
+
+    static func splitPDF(
+        _ input: URL,
+        outputDirectory: URL?,
+        cancellation: CancellationToken?,
+        beforePageProcessing: ((Int) throws -> Void)?
+    ) throws -> [URL] {
+        let activeCancellation = cancellation ?? CancellationToken()
+        if activeCancellation.isCancelled { throw MorphError.cancelled }
+        let snapshot = try snapshotPDFInput(input, cancellation: activeCancellation)
+        guard let document = PDFDocument(url: snapshot.fileURL), document.pageCount > 0 else {
             throw MorphError.invalidInput("The selected PDF is unreadable or has no pages.")
         }
+        try NativePDFEngine.validatePageCount(document.pageCount)
         let directory = outputDirectory ?? input.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var outputs: [URL] = []
+        let destinationStage = try PrivateOutputStage(parentDirectory: directory)
+        var outputs: [PublishedFileIdentity] = []
+        var totalOutputBytes: UInt64 = 0
         do {
             for index in 0..<document.pageCount {
+                if activeCancellation.isCancelled { throw MorphError.cancelled }
+                try beforePageProcessing?(index)
                 guard let page = document.page(at: index), let copy = page.copy() as? PDFPage else {
                     throw MorphError.invalidInput("Morph could not copy PDF page \(index + 1).")
                 }
                 let output = uniqueURL(baseName: "\(input.deletingPathExtension().lastPathComponent)-page-\(String(format: "%03d", index + 1))", extension: "pdf", directory: directory)
-                let temporary = temporaryFile(for: output)
+                guard destinationStage.outputDirectoryStillMatches(for: output) else {
+                    throw MorphError.invalidOutput("The selected PDF output folder moved during splitting. Choose it again and retry.")
+                }
+                let fileName = "page-\(String(format: "%03d", index + 1)).partial.pdf"
+                let pageStage = try PrivateOutputStage(
+                    parentDirectory: FileManager.default.temporaryDirectory,
+                    primaryFileName: fileName
+                )
+                let temporary = try pageStage.temporaryOutputURL()
                 let singlePage = PDFDocument()
                 singlePage.insert(copy, at: 0)
-                guard singlePage.write(to: temporary), PDFDocument(url: temporary)?.pageCount == 1 else {
-                    try? FileManager.default.removeItem(at: temporary)
+                guard singlePage.write(to: temporary),
+                      NativePDFEngine.hasPDFHeader(temporary),
+                      PDFDocument(url: temporary)?.pageCount == 1 else {
                     throw MorphError.invalidOutput("PDFKit could not write page \(index + 1).")
                 }
-                try commit(temporary, to: output)
-                outputs.append(output)
+                guard let attributes = try? FileManager.default.attributesOfItem(atPath: temporary.path),
+                      let size = attributes[.size] as? NSNumber,
+                      size.int64Value > 0 else {
+                    throw MorphError.invalidOutput("PDFKit produced an empty split page.")
+                }
+                let pageBytes = UInt64(size.int64Value)
+                guard pageBytes <= NativePDFEngine.maximumPDFInputBytes,
+                      totalOutputBytes <= NativePDFEngine.maximumGeneratedBytes - pageBytes else {
+                    throw MorphError.invalidOutput("Split PDF pages may not exceed 1 GB total or 512 MB per page.")
+                }
+                totalOutputBytes += pageBytes
+                guard !activeCancellation.isCancelled else { throw MorphError.cancelled }
+                guard pageStage.stagedFileStillMatchesPath(named: fileName, url: temporary),
+                      destinationStage.outputDirectoryStillMatches(for: output) else {
+                    throw MorphError.invalidOutput("The selected PDF output folder moved during splitting. Choose it again and retry.")
+                }
+                try destinationStage.copyValidatedFile(
+                    named: fileName,
+                    from: pageStage,
+                    to: fileName,
+                    for: output,
+                    cancellation: activeCancellation
+                )
+                _ = try destinationStage.publishUnique(fileName: fileName, to: output)
+                guard let identity = destinationStage.lastPublishedIdentity else {
+                    throw MorphError.invalidOutput("Morph could not verify a split PDF page after saving it.")
+                }
+                outputs.append(identity)
             }
         } catch {
-            for output in outputs { try? FileManager.default.removeItem(at: output) }
+            guard rollbackSplitOutputs(outputs, using: destinationStage) else {
+                throw MorphError.invalidOutput("PDF splitting failed, and Morph could not safely remove every partial page because an output path changed. No unrelated item was deleted; inspect the output folder before retrying.")
+            }
             throw error
         }
-        return outputs
+        guard outputs.last.map({ destinationStage.outputDirectoryStillMatches(for: $0.outputURL) }) == true else {
+            guard rollbackSplitOutputs(outputs, using: destinationStage) else {
+                throw MorphError.invalidOutput("The selected PDF output folder moved after splitting, and Morph could not safely remove every partial page. Inspect the original folder before retrying.")
+            }
+            throw MorphError.invalidOutput("The selected PDF output folder moved during splitting. Choose it again and retry.")
+        }
+        return outputs.map(\.outputURL)
     }
 
     @discardableResult
-    public static func extractPDFPages(_ input: URL, pageRange: String, outputDirectory: URL? = nil) throws -> URL {
-        guard let source = PDFDocument(url: input), source.pageCount > 0 else {
+    public static func extractPDFPages(
+        _ input: URL,
+        pageRange: String,
+        outputDirectory: URL? = nil,
+        cancellation: CancellationToken? = nil
+    ) throws -> URL {
+        if cancellation?.isCancelled == true { throw MorphError.cancelled }
+        let snapshot = try snapshotPDFInput(input, cancellation: cancellation)
+        guard let source = PDFDocument(url: snapshot.fileURL), source.pageCount > 0 else {
             throw MorphError.invalidInput("The selected PDF is unreadable or has no pages.")
         }
+        try NativePDFEngine.validatePageCount(source.pageCount)
         let pageNumbers = try parsePDFPageRanges(pageRange, pageCount: source.pageCount)
         let directory = outputDirectory ?? input.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let output = uniqueURL(baseName: input.deletingPathExtension().lastPathComponent + "-pages", extension: "pdf", directory: directory)
-        let temporary = temporaryFile(for: output)
-        defer { try? FileManager.default.removeItem(at: temporary) }
+        let transaction = try PrivateOutputTransaction(outputURL: output)
+        let temporary = transaction.temporaryOutputURL
 
         let extracted = PDFDocument()
         extracted.documentAttributes = source.documentAttributes
         for pageNumber in pageNumbers {
+            if cancellation?.isCancelled == true { throw MorphError.cancelled }
             guard let page = source.page(at: pageNumber - 1), let copy = page.copy() as? PDFPage else {
                 throw MorphError.invalidInput("Morph could not copy PDF page \(pageNumber).")
             }
             extracted.insert(copy, at: extracted.pageCount)
         }
+        if cancellation?.isCancelled == true { throw MorphError.cancelled }
         guard extracted.pageCount == pageNumbers.count,
               extracted.write(to: temporary),
+              NativePDFEngine.hasPDFHeader(temporary),
               PDFDocument(url: temporary)?.pageCount == pageNumbers.count else {
             throw MorphError.invalidOutput("PDFKit could not write and verify the extracted pages.")
         }
-        try commit(temporary, to: output)
-        return output
+        if cancellation?.isCancelled == true { throw MorphError.cancelled }
+        return try transaction.publishUnique(cancellation: cancellation)
     }
 
     public static func parsePDFPageRanges(_ selection: String, pageCount: Int) throws -> [Int] {
@@ -560,18 +715,22 @@ public enum MorphFileOperations {
         outputDirectory: URL? = nil,
         cancellation: CancellationToken? = nil
     ) throws -> URL {
-        guard let source = PDFDocument(url: input), source.pageCount > 0 else {
-            throw MorphError.invalidInput("The selected PDF is unreadable or has no pages.")
-        }
+        let inputSnapshot = try snapshotPDFInput(input, cancellation: cancellation)
+        try NativePDFEngine.validateHeaderForGhostscript(inputSnapshot.fileURL)
         guard let ghostscript = ExecutableLocator.resolve(["gs"]) else {
             throw MorphError.missingEngine(.ghostscript)
         }
+        try EngineSecurityPolicy.validateExecutable(ghostscript, for: .ghostscript, cancellation: cancellation)
+        guard let source = PDFDocument(url: inputSnapshot.fileURL), source.pageCount > 0 else {
+            throw MorphError.invalidInput("The selected PDF is unreadable or has no pages.")
+        }
+        try NativePDFEngine.validatePageCount(source.pageCount)
 
         let directory = outputDirectory ?? input.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let output = uniqueURL(baseName: input.deletingPathExtension().lastPathComponent + "-compressed", extension: "pdf", directory: directory)
-        let temporary = temporaryFile(for: output)
-        defer { try? FileManager.default.removeItem(at: temporary) }
+        let transaction = try PrivateOutputTransaction(outputURL: output)
+        let temporary = transaction.temporaryOutputURL
 
         let result = try ProcessRunner.run(
             executable: ghostscript,
@@ -579,45 +738,227 @@ public enum MorphFileOperations {
                 "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET",
                 "-sDEVICE=pdfwrite", "-dCompatibilityLevel=1.7",
                 "-dPDFSETTINGS=\(preset.ghostscriptSetting)",
-                "-sOutputFile=\(temporary.path)", input.path,
+                "-sOutputFile=\(temporary.path)", inputSnapshot.fileURL.path,
             ],
-            cancellation: cancellation
+            cancellation: cancellation,
+            timeout: 5 * 60,
+            outputFileLimit: ProcessOutputFileLimit(url: temporary, maximumBytes: NativePDFEngine.maximumGeneratedBytes),
+            sandboxReadableDirectories: [inputSnapshot.fileURL.deletingLastPathComponent()],
+            sandboxWritableDirectories: [temporary.deletingLastPathComponent()],
+            restrictedSandbox: true
         )
         guard result.status == 0 else {
             throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? "Ghostscript could not compress this PDF."
                 : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        guard let compressed = PDFDocument(url: temporary), compressed.pageCount == source.pageCount else {
+        try ConversionOutputLimits.validate(temporary, maximumBytes: NativePDFEngine.maximumGeneratedBytes)
+        guard NativePDFEngine.hasPDFHeader(temporary),
+              let compressed = PDFDocument(url: temporary), compressed.pageCount == source.pageCount else {
             throw MorphError.invalidOutput("The compressed PDF did not preserve all source pages.")
         }
-        try commit(temporary, to: output)
-        return output
+        return try transaction.publishUnique(cancellation: cancellation)
     }
 
     @discardableResult
-    public static func extractZIP(_ input: URL, outputDirectory: URL? = nil) throws -> URL {
-        guard input.pathExtension.lowercased() == "zip",
-              let unzip = ExecutableLocator.resolve(["unzip"]),
-              let ditto = ExecutableLocator.resolve(["ditto"]) else {
+    public static func extractZIP(
+        _ input: URL,
+        outputDirectory: URL? = nil,
+        cancellation: CancellationToken = CancellationToken()
+    ) throws -> URL {
+        guard input.pathExtension.lowercased() == "zip" else {
             throw MorphError.unsupportedInput(input)
         }
-        let listing = try ProcessRunner.run(executable: unzip, arguments: ["-Z1", input.path])
-        guard listing.status == 0 else { throw MorphError.invalidInput("The ZIP file could not be read.") }
-        try validateArchivePaths(listing.stdout)
+        if cancellation.isCancelled { throw MorphError.cancelled }
 
         let parent = outputDirectory ?? input.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-        let destination = uniqueURL(baseName: input.deletingPathExtension().lastPathComponent, extension: "", directory: parent, isDirectory: true)
-        let staging = FileManager.default.temporaryDirectory.appendingPathComponent("morph-extract-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: staging) }
+        let containingDirectory = parent.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: containingDirectory, withIntermediateDirectories: true)
+        let containingDescriptor = containingDirectory.path.withCString { open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC) }
+        guard containingDescriptor >= 0 else {
+            throw MorphError.invalidOutput("Morph could not safely open the chosen extraction folder.")
+        }
+        defer { close(containingDescriptor) }
 
-        let extraction = try ProcessRunner.run(executable: ditto, arguments: ["-x", "-k", input.path, staging.path])
-        guard extraction.status == 0 else { throw MorphError.invalidInput(extraction.stderr.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        try ensureContainedItems(staging)
-        try FileManager.default.moveItem(at: staging, to: destination)
-        return destination
+        let parentName = parent.lastPathComponent
+        var existingInfo = stat()
+        let existingStatus = parentName.withCString {
+            fstatat(containingDescriptor, $0, &existingInfo, AT_SYMLINK_NOFOLLOW)
+        }
+        let parentDescriptor: Int32
+        var createdParent = false
+        if existingStatus == 0 {
+            parentDescriptor = parentName.withCString {
+                openat(containingDescriptor, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+            }
+        } else if errno == ENOENT {
+            try validateArchiveExtractionParent(containingDescriptor)
+            let createStatus = parentName.withCString { mkdirat(containingDescriptor, $0, mode_t(0o755)) }
+            guard createStatus == 0 else {
+                throw MorphError.invalidOutput("Morph could not safely create the chosen extraction folder.")
+            }
+            createdParent = true
+            parentDescriptor = parentName.withCString {
+                openat(containingDescriptor, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+            }
+        } else {
+            throw MorphError.invalidOutput("Morph could not safely inspect the chosen extraction folder.")
+        }
+        guard parentDescriptor >= 0 else {
+            if createdParent { _ = parentName.withCString { unlinkat(containingDescriptor, $0, AT_REMOVEDIR) } }
+            throw MorphError.invalidOutput("Morph could not safely open the chosen extraction folder.")
+        }
+        defer { close(parentDescriptor) }
+        do {
+            try validateArchiveExtractionParent(parentDescriptor)
+        } catch {
+            if createdParent { _ = parentName.withCString { unlinkat(containingDescriptor, $0, AT_REMOVEDIR) } }
+            throw error
+        }
+        StaleMorphStageCleanup.remove(in: parent)
+
+        let stagingName = ".morph-extract-\(UUID().uuidString)"
+        let stagingCreated = stagingName.withCString { mkdirat(parentDescriptor, $0, mode_t(0o700)) }
+        guard stagingCreated == 0 else {
+            if createdParent { _ = parentName.withCString { unlinkat(containingDescriptor, $0, AT_REMOVEDIR) } }
+            throw MorphError.invalidOutput("Morph could not create a private archive staging folder.")
+        }
+        let stagingDescriptor = stagingName.withCString {
+            openat(parentDescriptor, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
+        }
+        guard stagingDescriptor >= 0 else {
+            _ = stagingName.withCString { unlinkat(parentDescriptor, $0, AT_REMOVEDIR) }
+            if createdParent { _ = parentName.withCString { unlinkat(containingDescriptor, $0, AT_REMOVEDIR) } }
+            throw MorphError.invalidOutput("Morph could not safely open its archive staging folder.")
+        }
+        guard morph_prepare_private_directory(stagingDescriptor) == 0 else {
+            let reason = String(cString: strerror(errno))
+            close(stagingDescriptor)
+            _ = stagingName.withCString { unlinkat(parentDescriptor, $0, AT_REMOVEDIR) }
+            if createdParent { _ = parentName.withCString { unlinkat(containingDescriptor, $0, AT_REMOVEDIR) } }
+            throw MorphError.invalidOutput("Morph could not remove inherited access from its archive staging folder: \(reason).")
+        }
+        do {
+            try StaleMorphStageCleanup.createOwnershipMarker(
+                in: parentDescriptor,
+                directoryDescriptor: stagingDescriptor,
+                directoryName: stagingName
+            )
+        } catch {
+            try? ArchiveExtractor.removeContents(of: stagingDescriptor)
+            close(stagingDescriptor)
+            _ = stagingName.withCString { unlinkat(parentDescriptor, $0, AT_REMOVEDIR) }
+            _ = StaleMorphStageCleanup.removeOwnershipMarker(in: parentDescriptor, directoryName: stagingName)
+            if createdParent { _ = parentName.withCString { unlinkat(containingDescriptor, $0, AT_REMOVEDIR) } }
+            throw error
+        }
+        var published = false
+        defer {
+            if !published {
+                try? ArchiveExtractor.removeContents(of: stagingDescriptor)
+                var openedInfo = stat()
+                var currentInfo = stat()
+                if fstat(stagingDescriptor, &openedInfo) == 0,
+                   stagingName.withCString({ fstatat(parentDescriptor, $0, &currentInfo, AT_SYMLINK_NOFOLLOW) }) == 0,
+                   openedInfo.st_dev == currentInfo.st_dev,
+                   openedInfo.st_ino == currentInfo.st_ino {
+                    if stagingName.withCString({ unlinkat(parentDescriptor, $0, AT_REMOVEDIR) }) == 0 {
+                        _ = StaleMorphStageCleanup.removeOwnershipMarker(in: parentDescriptor, directoryName: stagingName)
+                    }
+                }
+                if createdParent { _ = parentName.withCString { unlinkat(containingDescriptor, $0, AT_REMOVEDIR) } }
+            }
+            close(stagingDescriptor)
+        }
+
+        try ArchiveExtractor.extract(input: input, toDirectoryDescriptor: stagingDescriptor, cancellation: cancellation)
+        if cancellation.isCancelled { throw MorphError.cancelled }
+
+        var openedInfo = stat()
+        var currentInfo = stat()
+        guard fstat(stagingDescriptor, &openedInfo) == 0,
+              stagingName.withCString({ fstatat(parentDescriptor, $0, &currentInfo, AT_SYMLINK_NOFOLLOW) }) == 0,
+              openedInfo.st_dev == currentInfo.st_dev,
+              openedInfo.st_ino == currentInfo.st_ino else {
+            throw MorphError.invalidOutput("Morph's archive staging folder changed before it could be published.")
+        }
+
+        return try publishArchiveDirectory(
+            baseName: input.deletingPathExtension().lastPathComponent,
+            parent: parent,
+            parentDescriptor: parentDescriptor,
+            stagingName: stagingName,
+            stagingDescriptor: stagingDescriptor,
+            didPublish: {
+                published = true
+                _ = StaleMorphStageCleanup.removeOwnershipMarker(in: parentDescriptor, directoryName: stagingName)
+            }
+        )
+    }
+
+    static func publishArchiveDirectory(
+        baseName: String,
+        parent: URL,
+        parentDescriptor: Int32,
+        stagingName: String,
+        stagingDescriptor: Int32,
+        didPublish: () -> Void = {},
+        afterRename: (() throws -> Void)? = nil
+    ) throws -> URL {
+        guard PinnedDirectoryPath.matches(parent, descriptor: parentDescriptor),
+              PinnedDirectoryPath.entry(named: stagingName, in: parentDescriptor, matches: stagingDescriptor) else {
+            throw MorphError.invalidOutput("Morph's extraction folder moved before the extracted files could be published.")
+        }
+
+        let trimmedBaseName = baseName.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let visibleBaseName = trimmedBaseName.isEmpty ? "Extracted Files" : trimmedBaseName
+        var suffix = 1
+        let destinationName: String
+        while true {
+            let candidate = suffix == 1 ? visibleBaseName : "\(visibleBaseName)-\(suffix)"
+            let result = stagingName.withCString { sourceName in
+                candidate.withCString { destinationName in
+                    renameatx_np(parentDescriptor, sourceName, parentDescriptor, destinationName, UInt32(RENAME_EXCL))
+                }
+            }
+            if result == 0 {
+                destinationName = candidate
+                didPublish()
+                break
+            }
+            guard errno == EEXIST else {
+                throw MorphError.invalidOutput("Morph could not safely publish the extracted archive: \(String(cString: strerror(errno))).")
+            }
+            suffix += 1
+            guard suffix <= 10_000 else { throw MorphError.invalidOutput("Morph could not find a safe name for the extracted folder.") }
+        }
+
+        try afterRename?()
+        guard PinnedDirectoryPath.matches(parent, descriptor: parentDescriptor),
+              PinnedDirectoryPath.entry(named: destinationName, in: parentDescriptor, matches: stagingDescriptor) else {
+            throw MorphError.invalidOutput("The selected extraction folder moved while Morph was extracting. Morph could not verify a current result location, so it did not report the extraction as successful.")
+        }
+        return parent.appendingPathComponent(destinationName, isDirectory: true)
+    }
+
+    static func rollbackSplitOutputs(_ outputs: [PublishedFileIdentity]) -> Bool {
+        var removedAll = true
+        for output in outputs where !PublishedFileCleanup.removeIfUnchanged(output) {
+            removedAll = false
+        }
+        return removedAll
+    }
+
+    private static func rollbackSplitOutputs(_ outputs: [PublishedFileIdentity], using staging: PrivateOutputStage) -> Bool {
+        var removedAll = true
+        for output in outputs where !staging.removePublishedFileIfUnchanged(output) {
+            removedAll = false
+        }
+        return removedAll
+    }
+
+    private static func validateArchiveExtractionParent(_ descriptor: Int32) throws {
+        try OutputDirectorySecurity.validate(descriptor)
     }
 
     public static func parseVideoTrimRange(start: String, end: String) throws -> (startSeconds: Double, durationSeconds: Double) {
@@ -637,7 +978,8 @@ public enum MorphFileOperations {
         startSeconds: Double,
         endSeconds: Double,
         outputDirectory: URL? = nil,
-        cancellation: CancellationToken? = nil
+        cancellation: CancellationToken? = nil,
+        stripLocationMetadata: Bool = true
     ) throws -> URL {
         guard FileManager.default.fileExists(atPath: input.path) else {
             throw MorphError.invalidInput("The selected video is no longer available.")
@@ -649,8 +991,16 @@ public enum MorphFileOperations {
               let ffprobe = ExecutableLocator.resolve(["ffprobe"]) else {
             throw MorphError.missingEngine(.ffmpeg)
         }
+        try EngineSecurityPolicy.validateExecutable(ffmpeg, for: .ffmpeg, cancellation: cancellation)
+        try EngineSecurityPolicy.validateExecutable(ffprobe, for: .ffmpeg, cancellation: cancellation)
 
-        let sourceDuration = try mediaDuration(input, ffprobe: ffprobe, cancellation: cancellation)
+        let inputSnapshot = try PrivateInputSnapshot(
+            input: input,
+            fileExtension: input.pathExtension.lowercased(),
+            cancellation: cancellation ?? CancellationToken()
+        )
+
+        let sourceDuration = try mediaDuration(inputSnapshot.fileURL, ffprobe: ffprobe, cancellation: cancellation)
         guard endSeconds <= sourceDuration + 0.05 else {
             throw MorphError.invalidInput("The end time is beyond the video's duration of \(String(format: "%.2f", sourceDuration)) seconds.")
         }
@@ -658,32 +1008,45 @@ public enum MorphFileOperations {
         let directory = outputDirectory ?? input.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let output = uniqueURL(baseName: input.deletingPathExtension().lastPathComponent + "-trimmed", extension: "mp4", directory: directory)
-        let temporary = temporaryFile(for: output)
-        defer { try? FileManager.default.removeItem(at: temporary) }
+        let transaction = try PrivateOutputTransaction(outputURL: output)
+        let temporary = transaction.temporaryOutputURL
 
         let range = try parseVideoTrimRange(start: String(startSeconds), end: String(endSeconds))
-        let result = try ProcessRunner.run(executable: ffmpeg, arguments: [
-            "-hide_banner", "-loglevel", "error", "-nostdin", "-n",
-            "-ss", String(range.startSeconds), "-i", input.path,
+        let formatWhitelist = try ffmpegFormatWhitelist(for: inputSnapshot.fileURL)
+        var ffmpegArguments = [
+            "-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-protocol_whitelist", "file",
+            "-format_whitelist", formatWhitelist,
+            "-ss", String(range.startSeconds), "-i", inputSnapshot.fileURL.path,
             "-t", String(range.durationSeconds),
             "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0",
+        ]
+        if stripLocationMetadata {
+            ffmpegArguments += MediaMetadataPolicy.ffmpegLocationRemovalArguments
+        }
+        ffmpegArguments += [
             "-c:v", "libx264", "-preset", "medium", "-crf", "22",
             "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-f", "mp4",
+            "-fs", String(NativeMediaLimits.maximumOutputBytes),
             temporary.path,
-        ], cancellation: cancellation)
+        ]
+        let result = try ProcessRunner.run(executable: ffmpeg, arguments: ffmpegArguments, cancellation: cancellation, timeout: 30 * 60,
+           outputFileLimit: ProcessOutputFileLimit(url: temporary, maximumBytes: NativeMediaLimits.maximumOutputBytes),
+           sandboxReadableDirectories: [inputSnapshot.fileURL.deletingLastPathComponent()],
+           sandboxWritableDirectories: [temporary.deletingLastPathComponent()],
+           restrictedSandbox: true)
         guard result.status == 0 else {
             throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? "FFmpeg could not trim this video."
                 : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        try OutputValidator.validate(temporary, format: MorphFormat("mp4", "MP4", .video), engine: .ffmpeg)
+        try NativeMediaLimits.validate(temporary)
+        try OutputValidator.validate(temporary, format: MorphFormat("mp4", "MP4", .video), engine: .ffmpeg, cancellation: cancellation)
         let outputDuration = try mediaDuration(temporary, ffprobe: ffprobe, cancellation: cancellation)
         guard abs(outputDuration - range.durationSeconds) <= max(0.25, range.durationSeconds * 0.05) else {
             throw MorphError.invalidOutput("FFmpeg produced a clip with an unexpected duration.")
         }
         if cancellation?.isCancelled == true { throw MorphError.cancelled }
-        try commit(temporary, to: output)
-        return output
+        return try transaction.publishUnique(cancellation: cancellation)
     }
 
     @discardableResult
@@ -691,7 +1054,8 @@ public enum MorphFileOperations {
         _ input: URL,
         options: VideoCompressionOptions = VideoCompressionOptions(),
         outputDirectory: URL? = nil,
-        cancellation: CancellationToken? = nil
+        cancellation: CancellationToken? = nil,
+        stripLocationMetadata: Bool = true
     ) throws -> URL {
         guard FileManager.default.fileExists(atPath: input.path) else {
             throw MorphError.invalidInput("The selected video is no longer available.")
@@ -700,67 +1064,73 @@ public enum MorphFileOperations {
               let ffprobe = ExecutableLocator.resolve(["ffprobe"]) else {
             throw MorphError.missingEngine(.ffmpeg)
         }
+        try EngineSecurityPolicy.validateExecutable(ffmpeg, for: .ffmpeg, cancellation: cancellation)
+        try EngineSecurityPolicy.validateExecutable(ffprobe, for: .ffmpeg, cancellation: cancellation)
 
-        let sourceDuration = try mediaDuration(input, ffprobe: ffprobe, cancellation: cancellation)
-        let sourceDimensions = try mediaDimensions(input, ffprobe: ffprobe, cancellation: cancellation)
+        let inputSnapshot = try PrivateInputSnapshot(
+            input: input,
+            fileExtension: input.pathExtension.lowercased(),
+            cancellation: cancellation ?? CancellationToken()
+        )
+
+        let sourceDuration = try mediaDuration(inputSnapshot.fileURL, ffprobe: ffprobe, cancellation: cancellation)
+        let sourceDimensions = try mediaDimensions(inputSnapshot.fileURL, ffprobe: ffprobe, cancellation: cancellation)
         let directory = outputDirectory ?? input.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let output = uniqueURL(baseName: input.deletingPathExtension().lastPathComponent + "-compressed", extension: "mp4", directory: directory)
-        let temporary = temporaryFile(for: output)
-        defer { try? FileManager.default.removeItem(at: temporary) }
+        let transaction = try PrivateOutputTransaction(outputURL: output)
+        let temporary = transaction.temporaryOutputURL
 
-        let result = try ProcessRunner.run(executable: ffmpeg, arguments: [
-            "-hide_banner", "-loglevel", "error", "-nostdin", "-n",
-            "-i", input.path,
+        let formatWhitelist = try ffmpegFormatWhitelist(for: inputSnapshot.fileURL)
+        var ffmpegArguments = [
+            "-hide_banner", "-loglevel", "error", "-nostdin", "-n", "-protocol_whitelist", "file",
+            "-format_whitelist", formatWhitelist,
+            "-i", inputSnapshot.fileURL.path,
             "-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0", "-map_chapters", "0",
-            "-vf", options.resolutionLimit.ffmpegFilter,
+        ]
+        if stripLocationMetadata {
+            ffmpegArguments += MediaMetadataPolicy.ffmpegLocationRemovalArguments
+        }
+        ffmpegArguments += [
+            "-vf", options.resolutionLimit.ffmpegFilter(
+                sourceWidth: sourceDimensions.width,
+                sourceHeight: sourceDimensions.height
+            ),
             "-c:v", "libx264", "-preset", "medium", "-crf", String(options.quality.ffmpegCRF),
             "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", options.quality.audioBitrate,
+            "-fs", String(NativeMediaLimits.maximumOutputBytes),
             "-movflags", "+faststart", "-f", "mp4", temporary.path,
-        ], cancellation: cancellation)
+        ]
+        let result = try ProcessRunner.run(executable: ffmpeg, arguments: ffmpegArguments, cancellation: cancellation, timeout: 30 * 60,
+           outputFileLimit: ProcessOutputFileLimit(url: temporary, maximumBytes: NativeMediaLimits.maximumOutputBytes),
+           sandboxReadableDirectories: [inputSnapshot.fileURL.deletingLastPathComponent()],
+           sandboxWritableDirectories: [temporary.deletingLastPathComponent()],
+           restrictedSandbox: true)
         guard result.status == 0 else {
             throw MorphError.processFailed(result.stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? "FFmpeg could not compress this video."
                 : result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
 
-        try OutputValidator.validate(temporary, format: MorphFormat("mp4", "MP4", .video), engine: .ffmpeg)
+        try NativeMediaLimits.validate(temporary)
+        try OutputValidator.validate(temporary, format: MorphFormat("mp4", "MP4", .video), engine: .ffmpeg, cancellation: cancellation)
         let outputDuration = try mediaDuration(temporary, ffprobe: ffprobe, cancellation: cancellation)
         guard abs(outputDuration - sourceDuration) <= max(0.5, sourceDuration * 0.02) else {
             throw MorphError.invalidOutput("FFmpeg produced a compressed video with an unexpected duration.")
         }
         let outputDimensions = try mediaDimensions(temporary, ffprobe: ffprobe, cancellation: cancellation)
-        let maximumWidth = min(sourceDimensions.width, options.resolutionLimit.maximumWidth ?? sourceDimensions.width)
-        let maximumHeight = min(sourceDimensions.height, options.resolutionLimit.maximumHeight ?? sourceDimensions.height)
-        guard outputDimensions.width <= maximumWidth,
-              outputDimensions.height <= maximumHeight,
+        let maximumDimensions = options.resolutionLimit.maximumDimensions(
+            sourceWidth: sourceDimensions.width,
+            sourceHeight: sourceDimensions.height
+        )
+        guard outputDimensions.width <= maximumDimensions.width,
+              outputDimensions.height <= maximumDimensions.height,
               outputDimensions.width > 0,
               outputDimensions.height > 0 else {
             throw MorphError.invalidOutput("FFmpeg produced video dimensions outside the selected resolution limit.")
         }
         if cancellation?.isCancelled == true { throw MorphError.cancelled }
-        try commit(temporary, to: output)
-        return output
-    }
-
-    private static func validateArchivePaths(_ listing: String) throws {
-        for line in listing.split(separator: "\n") {
-            let path = String(line).replacingOccurrences(of: "\\", with: "/")
-            if path.hasPrefix("/") || path.split(separator: "/").contains("..") {
-                throw MorphError.invalidInput("The archive contains a path that escapes its extraction folder.")
-            }
-        }
-    }
-
-    private static func ensureContainedItems(_ root: URL) throws {
-        let rootPath = root.standardizedFileURL.path + "/"
-        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isSymbolicLinkKey]) else { return }
-        for case let url as URL in enumerator {
-            let resolved = url.standardizedFileURL.resolvingSymlinksInPath().path
-            if !resolved.hasPrefix(rootPath) {
-                throw MorphError.invalidInput("The archive contains a link that escapes its extraction folder.")
-            }
-        }
+        return try transaction.publishUnique(cancellation: cancellation)
     }
 
     private static func validateRenamableFile(_ input: URL) throws {
@@ -771,14 +1141,78 @@ public enum MorphFileOperations {
         }
     }
 
+    private static func snapshotPDFInput(_ input: URL, cancellation: CancellationToken? = nil) throws -> PrivateInputSnapshot {
+        guard input.pathExtension.lowercased() == "pdf" else {
+            throw MorphError.invalidInput("The selected file is not a PDF.")
+        }
+        let snapshot = try PrivateInputSnapshot(
+            input: input,
+            fileExtension: "pdf",
+            maximumBytes: NativePDFEngine.maximumPDFInputBytes,
+            cancellation: cancellation ?? CancellationToken()
+        )
+        try NativePDFEngine.validateInput(snapshot.fileURL)
+        return snapshot
+    }
+
+    private static func snapshotPDFMergeInputs(_ inputs: [URL]) throws -> [PrivateInputSnapshot] {
+        var snapshots: [PrivateInputSnapshot] = []
+        var totalBytes: UInt64 = 0
+        for input in inputs {
+            guard input.pathExtension.lowercased() == "pdf" else {
+                throw MorphError.invalidInput("‘\(input.lastPathComponent)’ is not a PDF file.")
+            }
+            let sourceSize = try regularInputFileSize(input, maximumBytes: NativePDFEngine.maximumPDFInputBytes)
+            let expectedTotal = try NativePDFEngine.addingMergedInputBytes(totalBytes, nextFileBytes: sourceSize)
+            let remainingBudget = NativePDFEngine.maximumCombinedInputBytes - totalBytes
+            let snapshot = try PrivateInputSnapshot(
+                input: input,
+                fileExtension: "pdf",
+                maximumBytes: min(NativePDFEngine.maximumPDFInputBytes, remainingBudget),
+                cancellation: CancellationToken()
+            )
+            let snapshotSize = try regularInputFileSize(snapshot.fileURL, maximumBytes: remainingBudget)
+            guard snapshotSize == sourceSize else {
+                throw MorphError.invalidInput("PDF inputs changed while Morph was preparing the merge. Select the files again and retry.")
+            }
+            totalBytes = expectedTotal
+            try NativePDFEngine.validateInput(snapshot.fileURL)
+            snapshots.append(snapshot)
+        }
+        return snapshots
+    }
+
+    private static func regularInputFileSize(_ input: URL, maximumBytes: UInt64) throws -> UInt64 {
+        guard input.isFileURL else {
+            throw MorphError.invalidInput("PDF inputs must be local regular files.")
+        }
+        let descriptor = input.path.withCString {
+            open($0, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
+        }
+        guard descriptor >= 0 else {
+            throw MorphError.invalidInput("The selected PDF is not a readable regular file.")
+        }
+        defer { close(descriptor) }
+        var info = stat()
+        guard fstat(descriptor, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG,
+              info.st_size > 0,
+              UInt64(info.st_size) <= maximumBytes else {
+            throw MorphError.invalidInput("PDF merge inputs must be regular files within Morph's size limits.")
+        }
+        return UInt64(info.st_size)
+    }
+
     private static func collisionKey(_ url: URL) -> String {
         url.standardizedFileURL.path.precomposedStringWithCanonicalMapping.lowercased(with: Locale(identifier: "en_US_POSIX"))
     }
 
     private static func mediaDuration(_ input: URL, ffprobe: URL, cancellation: CancellationToken?) throws -> Double {
+        let formatWhitelist = try ffmpegFormatWhitelist(for: input)
         let result = try ProcessRunner.run(executable: ffprobe, arguments: [
-            "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input.path,
-        ], cancellation: cancellation)
+            "-v", "error", "-protocol_whitelist", "file", "-format_whitelist", formatWhitelist,
+            "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", input.path,
+        ], cancellation: cancellation, sandboxReadableDirectories: [input.deletingLastPathComponent()], restrictedSandbox: true)
         guard result.status == 0,
               let duration = Double(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)),
               duration.isFinite, duration > 0 else {
@@ -788,16 +1222,37 @@ public enum MorphFileOperations {
     }
 
     private static func mediaDimensions(_ input: URL, ffprobe: URL, cancellation: CancellationToken?) throws -> (width: Int, height: Int) {
+        let formatWhitelist = try ffmpegFormatWhitelist(for: input)
         let result = try ProcessRunner.run(executable: ffprobe, arguments: [
-            "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
-            "-of", "csv=s=x:p=0", input.path,
-        ], cancellation: cancellation)
-        let dimensions = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: "x")
-        guard result.status == 0, dimensions.count == 2,
-              let width = Int(dimensions[0]), let height = Int(dimensions[1]), width > 0, height > 0 else {
+            "-v", "error", "-protocol_whitelist", "file", "-format_whitelist", formatWhitelist,
+            "-select_streams", "v:0", "-show_entries", "stream=width,height:stream_side_data=rotation",
+            "-of", "json", input.path,
+        ], cancellation: cancellation, sandboxReadableDirectories: [input.deletingLastPathComponent()], restrictedSandbox: true)
+        guard result.status == 0,
+              let data = result.stdout.data(using: .utf8),
+              let document = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let streams = document["streams"] as? [[String: Any]],
+              let stream = streams.first,
+              let width = stream["width"] as? Int,
+              let height = stream["height"] as? Int,
+              width > 0, height > 0 else {
             throw MorphError.invalidInput("FFprobe could not read a video stream and its dimensions.")
         }
+        let rotation = (stream["side_data_list"] as? [[String: Any]])?
+            .compactMap { ($0["rotation"] as? NSNumber)?.doubleValue }
+            .first
+        if let rotation, rotation.isFinite,
+           abs(Int(rotation.rounded())) % 180 == 90 {
+            return (height, width)
+        }
         return (width, height)
+    }
+
+    private static func ffmpegFormatWhitelist(for input: URL) throws -> String {
+        guard let whitelist = FFmpegInputFormat.whitelist(for: input.pathExtension) else {
+            throw MorphError.invalidInput("Morph cannot safely identify this media container.")
+        }
+        return whitelist
     }
 
     private static func uniqueURL(baseName: String, extension fileExtension: String, directory: URL, isDirectory: Bool = false) -> URL {
@@ -814,15 +1269,4 @@ public enum MorphFileOperations {
         return result
     }
 
-    private static func temporaryFile(for output: URL) -> URL {
-        output.deletingLastPathComponent().appendingPathComponent(".\(output.lastPathComponent).morph-\(UUID().uuidString).partial")
-    }
-
-    private static func commit(_ temporary: URL, to output: URL) throws {
-        guard !FileManager.default.fileExists(atPath: output.path) else {
-            throw MorphError.processFailed("Morph refused to replace an existing file.")
-        }
-        do { try FileManager.default.moveItem(at: temporary, to: output) }
-        catch { throw MorphError.processFailed("Morph could not save the output: \(error.localizedDescription)") }
-    }
 }

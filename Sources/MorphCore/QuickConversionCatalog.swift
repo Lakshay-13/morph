@@ -11,10 +11,12 @@ public enum QuickConversionCatalog {
     ) -> [MorphFormat] {
         guard !inputs.isEmpty else { return [] }
 
-        let outputSets = inputs.map { input in
-            Set(registry.availableOutputs(for: input)
+        let routesByInput = inputs.map { input in
+            registry.availableOutputs(for: input)
                 .filter { registry.isAvailable($0.engine) }
-                .map { $0.output.fileExtension })
+        }
+        let outputSets = routesByInput.map { routes in
+            Set(routes.map { $0.output.fileExtension })
         }
         guard var common = outputSets.first else { return [] }
         for outputs in outputSets.dropFirst() {
@@ -23,13 +25,32 @@ public enum QuickConversionCatalog {
         }
 
         let hidden = Set(hiddenOutputExtensions.map { $0.lowercased() })
-        let availableRoutes = registry.routes.filter {
-            common.contains($0.output.fileExtension)
-                && !hidden.contains($0.output.fileExtension)
-                && registry.isAvailable($0.engine)
-        }
-        let uniqueFormats = Dictionary(availableRoutes.map { ($0.output.fileExtension, $0.output) }, uniquingKeysWith: { first, _ in first })
-        return uniqueFormats.values.sorted {
+        return common.compactMap { fileExtension in
+            guard !hidden.contains(fileExtension) else { return nil }
+            let selectionRoutes = routesByInput.map { routes in
+                routes.filter { $0.output.fileExtension == fileExtension }
+            }
+            let outputs = selectionRoutes.flatMap { $0 }.map(\.output)
+            guard let first = outputs.first else { return nil }
+            let outputFormats = Set(outputs)
+            if outputFormats.count == 1 { return first }
+            if fileExtension == "zip" {
+                let allPDFs = inputs.allSatisfy { $0.pathExtension.lowercased() == "pdf" }
+                if allPDFs, let pdfPageFormat = outputs.first(where: { $0.displayName == "PNG images" }) {
+                    return pdfPageFormat
+                }
+                return MorphFormat("zip", inputs.count == 1 ? "ZIP archive" : "ZIP archive or PDF page images", .archive)
+            }
+            if fileExtension == "gif" {
+                return MorphFormat("gif", "GIF image or animation", .image)
+            }
+            return outputs.sorted {
+                let firstCategory = FormatCategory.allCases.firstIndex(of: $0.category) ?? .max
+                let secondCategory = FormatCategory.allCases.firstIndex(of: $1.category) ?? .max
+                if firstCategory != secondCategory { return firstCategory < secondCategory }
+                return $0.displayName < $1.displayName
+            }.first
+        }.sorted {
             let firstCategory = FormatCategory.allCases.firstIndex(of: $0.category) ?? .max
             let secondCategory = FormatCategory.allCases.firstIndex(of: $1.category) ?? .max
             if firstCategory != secondCategory { return firstCategory < secondCategory }

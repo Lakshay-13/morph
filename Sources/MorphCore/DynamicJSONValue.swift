@@ -2,6 +2,8 @@ import CoreFoundation
 import Foundation
 import TOML
 
+let dynamicJSONTOMLDateDecodingKey = CodingUserInfoKey(rawValue: "com.lakshaychawla.Morph.decodeTOMLDates")!
+
 enum DynamicJSONValue: Codable, Equatable {
     case object([String: DynamicJSONValue])
     case array([DynamicJSONValue])
@@ -109,21 +111,23 @@ enum DynamicJSONValue: Codable, Equatable {
                 self = .string(value)
                 return
             }
-            if let value = try? container.decode(LocalDateTime.self) {
-                self = .string(localDateTimeString(value))
-                return
-            }
-            if let value = try? container.decode(LocalDate.self) {
-                self = .string(localDateString(value))
-                return
-            }
-            if let value = try? container.decode(LocalTime.self) {
-                self = .string(localTimeString(value))
-                return
-            }
-            if let value = try? container.decode(Date.self) {
-                self = .string(iso8601String(value))
-                return
+            if decoder.userInfo[dynamicJSONTOMLDateDecodingKey] as? Bool == true {
+                if let value = try? container.decode(LocalDateTime.self) {
+                    self = .string(localDateTimeString(value))
+                    return
+                }
+                if let value = try? container.decode(LocalDate.self) {
+                    self = .string(localDateString(value))
+                    return
+                }
+                if let value = try? container.decode(LocalTime.self) {
+                    self = .string(localTimeString(value))
+                    return
+                }
+                if let value = try? container.decode(Date.self) {
+                    self = .string(iso8601String(value))
+                    return
+                }
             }
         }
 
