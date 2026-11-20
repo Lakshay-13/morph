@@ -132,4 +132,4 @@ jobs:
           if unzip -Z1 "$archive" | grep -Fq 'Convert with Morph.workflow'; then exit 1; fi
           if unzip -Z1 "$archive" | grep -Eq '(^|/)\._'; then exit 1; fi
           unzip -tq "$archive"
-          shasum -a 256 -c "$archive.sha256"
+          (cd "$RUNNER_TEMP/morph-dist" && shasum -a 256 -c "Morph-${version}-macOS-universal.zip.sha256")
