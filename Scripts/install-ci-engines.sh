@@ -28,8 +28,8 @@ brew install --formula "${formulas[@]}"
 version_is_at_least() {
   awk -v actual="$1" -v minimum="$2" '
     BEGIN {
-      gsub(/[-+]/, ".", actual)
-      gsub(/[-+]/, ".", minimum)
+      gsub(/[-+_]/, ".", actual)
+      gsub(/[-+_]/, ".", minimum)
       actual_count = split(actual, actual_parts, ".")
       minimum_count = split(minimum, minimum_parts, ".")
       part_count = actual_count > minimum_count ? actual_count : minimum_count
@@ -49,7 +49,7 @@ for entry in "${engines[@]}"; do
   formula="${entry%%:*}"
   minimum_version="${entry#*:}"
   installed_version="$(brew list --versions "$formula" | awk 'NR == 1 { print $2 }')"
-  if [[ ! "$installed_version" =~ ^[0-9]+([.-][0-9]+)*$ ]] \
+  if [[ ! "$installed_version" =~ ^[0-9]+([._+-][0-9]+)*$ ]] \
       || ! version_is_at_least "$installed_version" "$minimum_version"; then
     printf '%s must be at least %s for CI checks; found %s\n' \
       "$formula" "$minimum_version" "${installed_version:-missing}" >&2
