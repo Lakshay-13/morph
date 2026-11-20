@@ -1228,16 +1228,16 @@ final class MorphCheckSuite {
     private func checkQuickConversionCatalog() throws {
         let discoveredTargets = QuickConversionCatalog.availableOutputs(
             for: [URL(fileURLWithPath: "/tmp/source.png")],
-            registry: registry
+            registry: self.registry
         )
         try expect(discoveredTargets.contains { $0.fileExtension == "jpg" }, "The installed capability registry should offer PNG → JPEG")
         try expect(discoveredTargets.contains { $0.fileExtension == "pdf" }, "PNG should offer the native PDFKit route")
         try expect(discoveredTargets.allSatisfy { target in
-            registry.routes(from: "png", to: target.fileExtension).contains { registry.isAvailable($0.engine) }
+            self.registry.routes(from: "png", to: target.fileExtension).contains { self.registry.isAvailable($0.engine) }
         }, "Finder advertised a route whose engine is unavailable or blocked")
         let pdfTargets = QuickConversionCatalog.availableOutputs(
             for: [URL(fileURLWithPath: "/tmp/source.pdf")],
-            registry: registry
+            registry: self.registry
         )
         try expect(pdfTargets.contains { $0.fileExtension == "zip" && $0.displayName == "PNG images" }, "PDFs should offer a source-aware PNG images choice")
 
