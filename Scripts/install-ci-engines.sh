@@ -23,7 +23,18 @@ for entry in "${engines[@]}"; do
   formulas+=("$formula")
 done
 
-brew install --formula "${formulas[@]}"
+# GitHub's macOS images can ship with stale Homebrew metadata and preinstalled
+# engine versions. Refresh formula metadata first, then upgrade installed
+# formulae or install missing ones so the checks use the versions Morph trusts.
+brew update
+
+for formula in "${formulas[@]}"; do
+  if brew list --versions "$formula" >/dev/null 2>&1; then
+    brew upgrade --formula "$formula"
+  else
+    brew install --formula "$formula"
+  fi
+done
 
 version_is_at_least() {
   awk -v actual="$1" -v minimum="$2" '
