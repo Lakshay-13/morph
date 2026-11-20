@@ -3143,6 +3143,9 @@ final class MorphCheckSuite {
     }
 
     private func checkSevenZip(_ folder: URL) throws {
+        guard registry.isAvailable(.sevenZip) else {
+            throw CheckSkip(registry.status(for: .sevenZip)?.securityNotice ?? "7-Zip is unavailable or blocked by Morph's security policy")
+        }
         guard let sevenZipTool = ExecutableLocator.resolve(["7zz", "7z"]) else {
             throw CheckSkip("7-Zip is not installed")
         }
