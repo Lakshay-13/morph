@@ -2,42 +2,57 @@
 set -euo pipefail
 
 # Keep the real-engine CI fixtures aligned with Morph's executable security
-# floors. Update this list alongside EngineSecurityPolicy and its regression
-# cases; brew extract preserves the selected Homebrew formula versions instead
-# of following a moving latest release.
-readonly engine_tap="codex/morph-ci-engine-pins"
-readonly engines=(
+# floors. Update these minimums alongside EngineSecurityPolicy and its
+# regression cases. Install current Homebrew formulae instead of extracting
+# historical formula files that become incompatible with current Homebrew DSL.
+readonly engine_minimums=(
   "ffmpeg:9.0.2"
   "ghostscript:10.08.0"
   "imagemagick:7.1.2-36"
   "pandoc:3.14"
-  "sevenzip:26.06"
 )
 
-brew tap --force homebrew/core
-core_repository="$(brew --repository homebrew/core)"
-if [[ "$(git -C "$core_repository" rev-parse --is-shallow-repository)" == true ]]; then
-  git -C "$core_repository" fetch --unshallow
+engines=("${engine_minimums[@]}")
+if [[ "$(uname -m)" == "arm64" ]]; then
+  engines+=("sevenzip:26.06")
 fi
 
-brew tap-new --no-git "$engine_tap"
-
-install_specs=()
+formulas=()
 for entry in "${engines[@]}"; do
   formula="${entry%%:*}"
-  version="${entry#*:}"
-  brew extract --version="$version" "$formula" "$engine_tap"
-  install_specs+=("$engine_tap/$formula@$version")
+  formulas+=("$formula")
 done
 
-brew install "${install_specs[@]}"
+brew install --formula "${formulas[@]}"
+
+version_is_at_least() {
+  awk -v actual="$1" -v minimum="$2" '
+    BEGIN {
+      gsub(/[-+]/, ".", actual)
+      gsub(/[-+]/, ".", minimum)
+      actual_count = split(actual, actual_parts, ".")
+      minimum_count = split(minimum, minimum_parts, ".")
+      part_count = actual_count > minimum_count ? actual_count : minimum_count
+
+      for (i = 1; i <= part_count; i++) {
+        actual_part = actual_parts[i] + 0
+        minimum_part = minimum_parts[i] + 0
+        if (actual_part > minimum_part) exit 0
+        if (actual_part < minimum_part) exit 1
+      }
+      exit 0
+    }
+  '
+}
 
 for entry in "${engines[@]}"; do
   formula="${entry%%:*}"
-  version="${entry#*:}"
-  installed_version="$(brew list --versions "$engine_tap/$formula@$version" | awk 'NR == 1 { print $2 }')"
-  if [[ "$installed_version" != "$version" ]]; then
-    printf 'Expected %s %s, found %s\n' "$formula" "$version" "${installed_version:-missing}" >&2
+  minimum_version="${entry#*:}"
+  installed_version="$(brew list --versions "$formula" | awk 'NR == 1 { print $2 }')"
+  if [[ ! "$installed_version" =~ ^[0-9]+([.-][0-9]+)*$ ]] \
+      || ! version_is_at_least "$installed_version" "$minimum_version"; then
+    printf '%s must be at least %s for CI checks; found %s\n' \
+      "$formula" "$minimum_version" "${installed_version:-missing}" >&2
     exit 1
   fi
 done
