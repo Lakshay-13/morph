@@ -39,6 +39,7 @@ jobs:
         run: test "$(uname -m)" = "$EXPECTED_ARCH"
 
       - name: Install conversion engines used by the checks
+        if: matrix.arch == 'arm64'
         run: Scripts/install-ci-engines.sh
 
       # The pinned LibreOffice artifact is arm64-only; the harness skips its
