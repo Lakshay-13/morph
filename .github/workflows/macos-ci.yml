@@ -30,6 +30,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Confirm runner architecture
         env:
@@ -37,18 +39,13 @@ jobs:
         run: test "$(uname -m)" = "$EXPECTED_ARCH"
 
       - name: Install conversion engines used by the checks
-        run: |
-          brew install ffmpeg ghostscript imagemagick pandoc poppler
+        run: Scripts/install-ci-engines.sh
 
-      # The current LibreOffice Cask URL returns 404 for Intel; the harness
-      # skips LibreOffice-specific checks when that optional engine is absent.
+      # The pinned LibreOffice artifact is arm64-only; the harness skips its
+      # optional checks on Intel where that vendor package is unavailable.
       - name: Install LibreOffice for spreadsheet checks
         if: matrix.arch == 'arm64'
-        run: brew install --cask libreoffice
-
-      - name: Install 7-Zip for archive checks
-        if: matrix.arch == 'arm64'
-        run: brew install sevenzip
+        run: Scripts/install-ci-libreoffice.sh
 
       - name: Build Morph
         run: swift build --product Morph
@@ -64,6 +61,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Audit the Homebrew Cask draft
         run: |
@@ -86,14 +85,15 @@ jobs:
           fi
 
       - name: Build package
-        run: MORPH_VERSION=0.1.0 MORPH_DIST_DIR="$RUNNER_TEMP/morph-dist" Scripts/package-release.sh
+        run: MORPH_DIST_DIR="$RUNNER_TEMP/morph-dist" Scripts/package-release.sh
 
       - name: Verify universal archive
         shell: bash
         run: |
           set -euo pipefail
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Resources/Info.plist)"
           app="$RUNNER_TEMP/morph-dist/Morph.app"
-          archive="$RUNNER_TEMP/morph-dist/Morph-0.1.0-macOS-universal.zip"
+          archive="$RUNNER_TEMP/morph-dist/Morph-${version}-macOS-universal.zip"
           helper="$app/Contents/Helpers/MorphQuickConvert.app"
           finder_sync="$app/Contents/PlugIns/MorphFinderSync.appex"
           archs="$(lipo -archs "$app/Contents/MacOS/Morph")"
@@ -103,19 +103,31 @@ jobs:
           finder_sync_archs="$(lipo -archs "$finder_sync/Contents/MacOS/MorphFinderSync")"
           [[ "$finder_sync_archs" == *arm64* && "$finder_sync_archs" == *x86_64* ]]
           /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$helper/Contents/Info.plist" | grep -Fxq true
+          /usr/libexec/PlistBuddy -c 'Print :LSFileQuarantineEnabled' "$app/Contents/Info.plist" | grep -Fxq true
+          /usr/libexec/PlistBuddy -c 'Print :LSFileQuarantineEnabled' "$helper/Contents/Info.plist" | grep -Fxq true
           /usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$finder_sync/Contents/Info.plist" | grep -Fxq true
           /usr/libexec/PlistBuddy -c 'Print :NSExtension:NSExtensionPointIdentifier' "$finder_sync/Contents/Info.plist" | grep -Fxq com.apple.FinderSync
+          app_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist")"
+          helper_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$helper/Contents/Info.plist")"
+          extension_build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$finder_sync/Contents/Info.plist")"
+          [[ "$app_build" == "$helper_build" && "$app_build" == "$extension_build" ]]
           codesign --verify --deep --strict "$app"
+          for code in "$app" "$helper" "$finder_sync"; do
+            signature="$(codesign --display --verbose=4 "$code" 2>&1)"
+            [[ "$signature" == *runtime* ]]
+            entitlements="$(codesign -d --entitlements :- "$code" 2>/dev/null || true)"
+            [[ "$entitlements" != *get-task-allow* ]]
+          done
           test -s "$app/Contents/Resources/Legal/LICENSE"
           test -s "$app/Contents/Resources/Legal/THIRD_PARTY.md"
           test -s "$app/Contents/Resources/Legal/THIRD_PARTY_LICENSES/Yams-MIT.txt"
           test -s "$app/Contents/Resources/Legal/THIRD_PARTY_LICENSES/LibYAML-MIT.txt"
           test -s "$app/Contents/Resources/Legal/THIRD_PARTY_LICENSES/Swift-TOML-MIT.txt"
           test -s "$app/Contents/Resources/Legal/THIRD_PARTY_LICENSES/toml++-MIT.txt"
-          unzip -Z1 "$archive" | grep -Fxq 'Morph-0.1.0/LICENSE'
-          unzip -Z1 "$archive" | grep -Fxq 'Morph-0.1.0/THIRD_PARTY_LICENSES/LibYAML-MIT.txt'
-          unzip -Z1 "$archive" | grep -Fxq 'Morph-0.1.0/Morph.app/Contents/Helpers/MorphQuickConvert.app/Contents/MacOS/MorphQuickConvert'
-          unzip -Z1 "$archive" | grep -Fxq 'Morph-0.1.0/Morph.app/Contents/PlugIns/MorphFinderSync.appex/Contents/MacOS/MorphFinderSync'
+          unzip -Z1 "$archive" | grep -Fxq "Morph-${version}/LICENSE"
+          unzip -Z1 "$archive" | grep -Fxq "Morph-${version}/THIRD_PARTY_LICENSES/LibYAML-MIT.txt"
+          unzip -Z1 "$archive" | grep -Fxq "Morph-${version}/Morph.app/Contents/Helpers/MorphQuickConvert.app/Contents/MacOS/MorphQuickConvert"
+          unzip -Z1 "$archive" | grep -Fxq "Morph-${version}/Morph.app/Contents/PlugIns/MorphFinderSync.appex/Contents/MacOS/MorphFinderSync"
           if unzip -Z1 "$archive" | grep -Fq 'Convert with Morph.workflow'; then exit 1; fi
           if unzip -Z1 "$archive" | grep -Eq '(^|/)\._'; then exit 1; fi
           unzip -tq "$archive"
